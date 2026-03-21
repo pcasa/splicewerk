@@ -11,8 +11,9 @@ branding:
     secondary: "#222222"    # Background / dark color
     accent: "#FFFFFF"       # Text / highlight color
   fonts:
-    heading: "Arial Bold"   # Font for titles and headers
-    body: "Arial"           # Font for body text
+    heading: "assets/fonts/BebasNeue-Regular.ttf"
+    body: "assets/fonts/Montserrat-Regular.ttf"
+    bold: "assets/fonts/Montserrat-Bold.ttf"
   logo: ""                  # Path to logo file (PNG with transparency)
   watermark: ""             # Path to watermark file (optional)
 
