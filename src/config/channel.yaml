@@ -11,9 +11,11 @@ branding:
     secondary: "#222222"    # Background / dark color
     accent: "#FFFFFF"       # Text / highlight color
   fonts:
-    heading: "assets/fonts/BebasNeue-Regular.ttf"
-    body: "assets/fonts/Montserrat-Regular.ttf"
-    bold: "assets/fonts/Montserrat-Bold.ttf"
+    wordmark: "assets/fonts/BebasNeue-Regular.ttf"     # Logo / wordmark (alt: Orbitron-Regular.ttf)
+    wordmark_alt: "assets/fonts/Orbitron-Regular.ttf"  # Mechanical/tech variant for wordmark
+    heading: "assets/fonts/Montserrat-SemiBold.ttf"    # Performance headlines, strong readability
+    body: "assets/fonts/Inter-Regular.ttf"             # Captions / channel text / website
+    # eurostile_extended: ""                           # Optional alt for merch — commercial license required (not on Google Fonts)
   logo: ""                  # Path to logo file (PNG with transparency)
   watermark: ""             # Path to watermark file (optional)
 
