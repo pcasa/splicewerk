@@ -2,16 +2,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // ─── Mocks ───
 
-const mockSharpInstance = {
-  resize: vi.fn().mockReturnThis(),
-  composite: vi.fn().mockReturnThis(),
-  jpeg: vi.fn().mockReturnThis(),
-  png: vi.fn().mockReturnThis(),
-  toFile: vi.fn().mockResolvedValue({ size: 12345 }),
-  toBuffer: vi.fn().mockResolvedValue(Buffer.from('fake-image')),
-}
-
-const mockSharp = vi.fn().mockReturnValue(mockSharpInstance)
+const { mockSharpInstance, mockSharp } = vi.hoisted(() => {
+  const mockSharpInstance = {
+    resize: vi.fn().mockReturnThis(),
+    composite: vi.fn().mockReturnThis(),
+    jpeg: vi.fn().mockReturnThis(),
+    png: vi.fn().mockReturnThis(),
+    toFile: vi.fn().mockResolvedValue({ size: 12345 }),
+    toBuffer: vi.fn().mockResolvedValue(Buffer.from('fake-image')),
+  }
+  const mockSharp = vi.fn().mockReturnValue(mockSharpInstance)
+  return { mockSharpInstance, mockSharp }
+})
 
 vi.mock('sharp', () => ({
   default: mockSharp,
