@@ -1,0 +1,34 @@
+# Splicewerk Music Library
+# Map mood/energy/genre tags to local file paths
+# Add your licensed tracks from Epidemic Sound or Uppbeat here
+
+tracks: []
+
+# Example entries (uncomment and fill in paths when you have tracks):
+# tracks:
+#   - path: "assets/music/energetic-rock-01.mp3"
+#     title: "Energetic Rock 01"
+#     mood: ["energetic", "upbeat", "intense"]
+#     energy: "high"
+#     genre: "rock"
+#     durationSeconds: 180
+#     bpm: 128
+#     tags: ["driving", "action", "fast"]
+#
+#   - path: "assets/music/chill-ambient-01.mp3"
+#     title: "Chill Ambient 01"
+#     mood: ["calm", "relaxed", "atmospheric"]
+#     energy: "low"
+#     genre: "ambient"
+#     durationSeconds: 240
+#     bpm: 75
+#     tags: ["background", "subtle", "focus"]
+#
+#   - path: "assets/music/upbeat-pop-01.mp3"
+#     title: "Upbeat Pop 01"
+#     mood: ["happy", "upbeat", "fun"]
+#     energy: "medium"
+#     genre: "pop"
+#     durationSeconds: 200
+#     bpm: 105
+#     tags: ["positive", "light", "catchy"]

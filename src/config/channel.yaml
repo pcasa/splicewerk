@@ -1,0 +1,71 @@
+# Splicewerk Channel Configuration
+# Copy this file and fill in your own values
+
+channel:
+  name: "My Channel"
+  tagline: "Your channel tagline here"
+
+branding:
+  colors:
+    primary: "#FF4444"      # Main brand color (used for titles, accents)
+    secondary: "#222222"    # Background / dark color
+    accent: "#FFFFFF"       # Text / highlight color
+  fonts:
+    heading: "Arial Bold"   # Font for titles and headers
+    body: "Arial"           # Font for body text
+  logo: ""                  # Path to logo file (PNG with transparency)
+  watermark: ""             # Path to watermark file (optional)
+
+defaults:
+  targetDurationSeconds: 30
+  outputFormats:
+    - youtube
+    - instagram-reels
+    - tiktok
+  aspectRatio: "16:9"
+  resolution: "1920x1080"
+
+intro:
+  enabled: true
+  durationSeconds: 3
+  template: "logo_reveal"   # logo_reveal | text_slide | fade_in
+
+outro:
+  enabled: true
+  durationSeconds: 5
+  template: "subscribe_cta" # subscribe_cta | logo_hold | fade_out
+
+textStyles:
+  title:
+    fontSize: 72
+    fontColor: "#FFFFFF"
+    background: true
+    backgroundColor: "rgba(0,0,0,0.7)"
+  subtitle:
+    fontSize: 48
+    fontColor: "#FFFFFF"
+    background: false
+  caption:
+    fontSize: 32
+    fontColor: "#FFFFFF"
+    background: true
+    backgroundColor: "rgba(0,0,0,0.5)"
+  label:
+    fontSize: 36
+    fontColor: "#FFFFFF"
+    background: true
+    backgroundColor: "#FF4444"
+
+thumbnailStyles:
+  default:
+    style: "singleFrame"
+    textPosition: "center"
+    overlayOpacity: 0.4
+  beforeAfter:
+    style: "beforeAfterSplit"
+    leftLabel: "BEFORE"
+    rightLabel: "AFTER"
+    textPosition: "top-center"
+  collage:
+    style: "collage"
+    textPosition: "top-center"
