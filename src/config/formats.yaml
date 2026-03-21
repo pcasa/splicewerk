@@ -1,0 +1,112 @@
+formats:
+  youtube:
+    label: "YouTube (16:9)"
+    width: 1920
+    height: 1080
+    fps: 30
+    aspect_ratio: "16:9"
+    codec: h264
+    crf: 18
+    max_bitrate: "20M"
+    audio_bitrate: "192k"
+    pixel_format: yuv420p
+    container: mp4
+    max_duration: null
+    notes: "Primary format — all other formats derive from this"
+
+  youtube-shorts:
+    label: "YouTube Shorts (9:16)"
+    width: 1080
+    height: 1920
+    fps: 30
+    aspect_ratio: "9:16"
+    codec: h264
+    crf: 20
+    max_bitrate: "10M"
+    audio_bitrate: "128k"
+    pixel_format: yuv420p
+    container: mp4
+    max_duration: 60
+    crop_strategy: "center"
+    notes: "Max 60 seconds"
+
+  instagram-reels:
+    label: "Instagram Reels (9:16)"
+    width: 1080
+    height: 1920
+    fps: 30
+    aspect_ratio: "9:16"
+    codec: h264
+    crf: 20
+    max_bitrate: "10M"
+    audio_bitrate: "128k"
+    pixel_format: yuv420p
+    container: mp4
+    max_duration: 90
+    crop_strategy: "center"
+
+  instagram-feed:
+    label: "Instagram Feed (1:1)"
+    width: 1080
+    height: 1080
+    fps: 30
+    aspect_ratio: "1:1"
+    codec: h264
+    crf: 20
+    max_bitrate: "8M"
+    audio_bitrate: "128k"
+    pixel_format: yuv420p
+    container: mp4
+    max_duration: 60
+    crop_strategy: "center"
+
+  tiktok:
+    label: "TikTok (9:16)"
+    width: 1080
+    height: 1920
+    fps: 30
+    aspect_ratio: "9:16"
+    codec: h264
+    crf: 20
+    max_bitrate: "10M"
+    audio_bitrate: "128k"
+    pixel_format: yuv420p
+    container: mp4
+    max_duration: 180
+    crop_strategy: "center"
+
+  facebook:
+    label: "Facebook Feed (~1.91:1)"
+    width: 1200
+    height: 628
+    fps: 30
+    aspect_ratio: "1.91:1"
+    codec: h264
+    crf: 20
+    max_bitrate: "8M"
+    audio_bitrate: "128k"
+    pixel_format: yuv420p
+    container: mp4
+    max_duration: 240
+    crop_strategy: "letterbox"
+
+  twitter-x:
+    label: "Twitter/X (16:9)"
+    width: 1920
+    height: 1080
+    fps: 30
+    aspect_ratio: "16:9"
+    codec: h264
+    crf: 20
+    max_bitrate: "15M"
+    audio_bitrate: "128k"
+    pixel_format: yuv420p
+    container: mp4
+    max_duration: 140
+
+  thumbnail:
+    label: "YouTube Thumbnail"
+    width: 1280
+    height: 720
+    format: jpg
+    quality: 95
