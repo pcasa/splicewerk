@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  splicewerk: 'link:'
+
 importers:
 
   .:
@@ -26,6 +29,9 @@ importers:
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
+      splicewerk:
+        specifier: 'link:'
+        version: 'link:'
       typescript:
         specifier: ^5.9.3
         version: 5.9.3

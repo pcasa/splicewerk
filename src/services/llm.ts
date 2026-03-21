@@ -27,10 +27,11 @@ export interface ChannelConfig {
 // ─── Constants ───
 
 const DEFAULT_MODEL = 'nemotron-3-super:cloud'
-const FALLBACK_MODEL = 'nemotron-3-nano'
+const FALLBACK_MODEL = process.env.OLLAMA_FALLBACK_MODEL ?? 'nemotron-3-nano:4b'
 const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://localhost:11434'
 const BASE_URL = `${OLLAMA_HOST}/v1`
 const RETRY_DELAYS_MS = [500, 1000, 2000]
+const LLM_TIMEOUT_MS = 30 * 60 * 1000 // 30 minutes
 
 // ─── EDL Schema Description ───
 
@@ -131,17 +132,26 @@ export async function callLLM(
     console.log(`[LLM] Calling model=${model} attempt=${attempt}/${maxAttempts}`)
 
     try {
-      const response = await fetch(`${BASE_URL}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          messages,
-          stream: false,
-          temperature,
-          max_tokens: maxTokens,
-        }),
-      })
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS)
+
+      let response: Response
+      try {
+        response = await fetch(`${BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            messages,
+            stream: false,
+            temperature,
+            max_tokens: maxTokens,
+          }),
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timeoutId)
+      }
 
       if (!response.ok) {
         const status = response.status

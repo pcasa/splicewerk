@@ -38,6 +38,26 @@ interface FfprobeOutput {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".avi", ".mkv"]);
+
+// ─── FFprobe Path Resolution ──────────────────────────────────────────────────
+
+const FFPROBE_SEARCH_PATHS = [
+  "/opt/homebrew/bin/ffprobe",   // macOS Apple Silicon (Homebrew)
+  "/usr/local/bin/ffprobe",      // macOS Intel (Homebrew)
+  "/usr/bin/ffprobe",            // Linux system install
+];
+
+function resolveFfprobePath(): string {
+  // Prefer explicit env override
+  if (process.env.FFPROBE_PATH) return process.env.FFPROBE_PATH;
+  for (const candidate of FFPROBE_SEARCH_PATHS) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  // Fallback: rely on PATH (may fail if not found)
+  return "ffprobe";
+}
+
+const FFPROBE_BIN = resolveFfprobePath();
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif"]);
 const AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".aac", ".m4a"]);
 
@@ -67,7 +87,7 @@ async function runFfprobe(
   filePath: string
 ): Promise<Result<FfprobeOutput>> {
   try {
-    const { stdout } = await execFileAsync("ffprobe", [
+    const { stdout } = await execFileAsync(FFPROBE_BIN, [
       "-v",
       "quiet",
       "-print_format",

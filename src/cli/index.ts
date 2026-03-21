@@ -4,6 +4,7 @@ import path from 'node:path'
 import { Command } from 'commander'
 import { Inngest } from 'inngest'
 import { catalogAssets } from '../services/asset-catalog.js'
+import { generateEDL } from '../services/llm.js'
 import { loadFormatPresets } from '../services/ffmpeg.js'
 
 // ─── Inngest client ───────────────────────────────────────────────────────────
@@ -28,6 +29,29 @@ export async function handleProduce(options: ProduceOptions): Promise<void> {
     const formatsArray = options.formats.split(',').map((f) => f.trim()).filter(Boolean)
     const projectName = options.project ?? path.basename(path.resolve(options.assets))
 
+    if (options.dryRun) {
+      // Inline dry-run: catalog assets + generate EDL without Inngest
+      console.log(`⧗ Dry run for project: ${projectName}`)
+      console.log(`  Formats: ${formatsArray.join(', ')}\n`)
+
+      console.log('  [1/2] Cataloging assets...')
+      const manifest = await catalogAssets(options.assets)
+      console.log(`        ${manifest.files.length} file(s) found: ${manifest.files.map(f => f.filename).join(', ')}\n`)
+
+      console.log('  [2/2] Generating EDL via LLM...')
+      const result = await generateEDL(options.prompt, manifest)
+      if (!result.ok) {
+        console.error(`\n✗ EDL generation failed: ${result.error}`)
+        process.exit(1)
+      }
+
+      console.log('\n─── Generated EDL ───────────────────────────────────────\n')
+      console.log(JSON.stringify(result.value, null, 2))
+      console.log('\n─────────────────────────────────────────────────────────')
+      console.log('\n✓ Dry run complete. Run without --dry-run to queue the full render.')
+      return
+    }
+
     await inngest.send({
       name: 'video/production-requested',
       data: {
@@ -35,7 +59,7 @@ export async function handleProduce(options: ProduceOptions): Promise<void> {
         assetsDir: options.assets,
         formats: formatsArray,
         projectName,
-        dryRun: options.dryRun,
+        dryRun: false,
       },
     })
 
