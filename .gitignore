@@ -1,0 +1,13 @@
+node_modules/
+.env
+dist/
+projects/*/rendered/
+projects/*/prepared/
+projects/*/output/
+*.mp4
+*.mov
+*.avi
+*.mkv
+__pycache__/
+.ruff_cache/
+.venv/
