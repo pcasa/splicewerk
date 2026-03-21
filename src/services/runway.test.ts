@@ -6,36 +6,34 @@ import * as fsPromises from 'node:fs/promises'
 vi.mock('dotenv/config', () => ({}))
 
 // ─── Mock RunwayML SDK ────────────────────────────────────────────────────────
-// vi.mock() is hoisted, so we use vi.hoisted() to create mock fns accessible
-// both inside the factory and in test assertions.
+// All mock objects must be created inside vi.hoisted() so they are available
+// when vi.mock() factories run (which are hoisted above imports).
+// mockImplementation must use 'function' (not arrow) for constructor mocks.
 
-const mockImageToVideoCreate = vi.hoisted(() =>
-  vi.fn().mockResolvedValue({ id: 'task-123' })
-)
-const mockTextToVideoCreate = vi.hoisted(() =>
-  vi.fn().mockResolvedValue({ id: 'task-123' })
-)
-const mockVideoToVideoCreate = vi.hoisted(() =>
-  vi.fn().mockResolvedValue({ id: 'task-123' })
-)
-const mockTasksRetrieve = vi.hoisted(() =>
-  vi.fn().mockResolvedValue({
-    id: 'task-123',
-    status: 'SUCCEEDED',
-    output: ['https://example.com/video.mp4'],
-    createdAt: '2024-01-01T00:00:00Z',
+const { mockImageToVideoCreate, mockTextToVideoCreate, mockVideoToVideoCreate, mockTasksRetrieve, mockClient } =
+  vi.hoisted(() => {
+    const mockImageToVideoCreate = vi.fn().mockResolvedValue({ id: 'task-123' })
+    const mockTextToVideoCreate = vi.fn().mockResolvedValue({ id: 'task-123' })
+    const mockVideoToVideoCreate = vi.fn().mockResolvedValue({ id: 'task-123' })
+    const mockTasksRetrieve = vi.fn().mockResolvedValue({
+      id: 'task-123',
+      status: 'SUCCEEDED',
+      output: ['https://example.com/video.mp4'],
+      createdAt: '2024-01-01T00:00:00Z',
+    })
+    const mockClient = {
+      imageToVideo: { create: mockImageToVideoCreate },
+      textToVideo: { create: mockTextToVideoCreate },
+      videoToVideo: { create: mockVideoToVideoCreate },
+      tasks: { retrieve: mockTasksRetrieve },
+    }
+    return { mockImageToVideoCreate, mockTextToVideoCreate, mockVideoToVideoCreate, mockTasksRetrieve, mockClient }
   })
-)
 
-vi.mock('@runwayml/sdk', () => {
-  const mockClient = {
-    imageToVideo: { create: mockImageToVideoCreate },
-    textToVideo: { create: mockTextToVideoCreate },
-    videoToVideo: { create: mockVideoToVideoCreate },
-    tasks: { retrieve: mockTasksRetrieve },
-  }
-  return { default: vi.fn().mockImplementation(() => mockClient) }
-})
+vi.mock('@runwayml/sdk', () => ({
+  // Must use 'function' keyword (not arrow) so vitest allows 'new RunwayML(...)'
+  default: vi.fn().mockImplementation(function () { return mockClient }),
+}))
 
 // ─── Mock node:fs/promises ────────────────────────────────────────────────────
 
