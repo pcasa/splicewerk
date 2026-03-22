@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #0A0A0A;
+  --color-card: #111111;
+  --color-input: #0D0D0D;
+  --color-border: #222222;
+  --color-border-input: #333333;
+  --color-red: #E02828;
+  --color-orange: #F46E2C;
+  --color-text: #F7F6F5;
+  --color-muted: #888888;
+  --color-subtle: #444444;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #111;
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
+
+/* Status dots */
+.status-dot {
+  @apply inline-block w-2 h-2 rounded-full flex-shrink-0;
+}
+.status-dot--running {
+  background-color: #22c55e;
+  box-shadow: 0 0 6px #22c55e80;
+}
+.status-dot--sleeping {
+  background-color: #F46E2C;
+  box-shadow: 0 0 6px #F46E2C80;
+}
+.status-dot--completed {
+  background-color: #444444;
+}
+.status-dot--failed {
+  background-color: #E02828;
+  box-shadow: 0 0 6px #E0282880;
+}
+.status-dot--configured {
+  background-color: #22c55e;
+  box-shadow: 0 0 6px #22c55e80;
+}
+.status-dot--unconfigured {
+  background-color: #444444;
+}

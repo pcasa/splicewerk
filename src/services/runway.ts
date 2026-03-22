@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import RunwayML from '@runwayml/sdk'
 import type { TaskRetrieveResponse } from '@runwayml/sdk/resources/tasks.js'
+import sharp from 'sharp'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -10,7 +11,7 @@ type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const DEFAULT_OUTPUT_DIR = './rendered/runway'
+const DEFAULT_OUTPUT_DIR = 'rendered/runway'
 const POLL_INTERVAL_MS = 5000
 const MAX_POLL_ATTEMPTS = 60
 
@@ -28,19 +29,42 @@ function timestamp(): number {
   return Date.now()
 }
 
-function getMimeType(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase()
-  switch (ext) {
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg'
-    case '.png':
-      return 'image/png'
-    case '.webp':
-      return 'image/webp'
-    default:
-      return 'image/jpeg'
+// Runway accepts promptImage as base64 data URL; limit is ~10MB for the image.
+// We target well under that: resize to at most 1280×720 and drop quality
+// progressively until the encoded buffer is under MAX_IMAGE_BYTES.
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024 // 4 MB safety ceiling
+
+async function prepareImageForRunway(filePath: string): Promise<{ buffer: Buffer; mimeType: string }> {
+  const originalSize = (await fs.stat(filePath)).size
+  let quality = 80
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const buffer = await sharp(filePath)
+      .rotate()                                              // honour EXIF orientation
+      .resize(1280, 720, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality })
+      .toBuffer()
+
+    console.log(
+      `[Runway] Image prep attempt ${attempt}: ${Math.round(originalSize / 1024)}KB → ` +
+      `${Math.round(buffer.length / 1024)}KB (quality ${quality}%)`
+    )
+
+    if (buffer.length <= MAX_IMAGE_BYTES) {
+      return { buffer, mimeType: 'image/jpeg' }
+    }
+
+    quality -= 20  // 80 → 60 → 40
   }
+
+  // Last resort: 640×360 at quality 40
+  const buffer = await sharp(filePath)
+    .rotate()
+    .resize(640, 360, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 40 })
+    .toBuffer()
+  console.log(`[Runway] Image fallback resize: ${Math.round(buffer.length / 1024)}KB`)
+  return { buffer, mimeType: 'image/jpeg' }
 }
 
 async function ensureOutputDir(outputDir: string): Promise<void> {
@@ -129,8 +153,7 @@ export async function imageToVideo(
 
   let taskId: string
   try {
-    const imageBuffer = await fs.readFile(imagePath)
-    const mimeType = getMimeType(imagePath)
+    const { buffer: imageBuffer, mimeType } = await prepareImageForRunway(imagePath)
     const base64 = imageBuffer.toString('base64')
     const dataUrl = `data:${mimeType};base64,${base64}`
 
@@ -139,8 +162,7 @@ export async function imageToVideo(
       promptImage: dataUrl,
       promptText: prompt,
       duration: durationSeconds,
-      // '1280:768' is the spec ratio; SDK types list '1280:720' but the API accepts '1280:768'
-      ratio: '1280:768' as '1280:720',
+      ratio: '1280:720',
     })
     taskId = response.id
     console.log(`[Runway] imageToVideo task created: ${taskId}`)
@@ -197,15 +219,11 @@ export async function textToVideo(
 
   let taskId: string
   try {
-    // gen4_turbo text-to-video — SDK types currently only list gen4.5/veo3 variants
-    // but the Runway API supports gen4_turbo for text-to-video as well.
-    // '1280:768' is the spec ratio; SDK types use different ratio names.
-    // @ts-expect-error gen4_turbo is valid for text-to-video at the API level
     const response = await client.textToVideo.create({
-      model: 'gen4_turbo',
+      model: 'gen4.5',
       promptText: prompt,
       duration: durationSeconds,
-      ratio: '1280:768',
+      ratio: '1280:720',
     })
     taskId = response.id
     console.log(`[Runway] textToVideo task created: ${taskId}`)
@@ -271,11 +289,10 @@ export async function editVideo(
     const base64 = videoBuffer.toString('base64')
     const dataUrl = `data:video/mp4;base64,${base64}`
 
-    // The SDK's VideoToVideoCreateParams uses model 'gen4_aleph' with videoUri (HTTPS URL).
-    // We pass a base64 data URL with gen4_turbo here as specified in the service contract.
-    // @ts-expect-error gen4_turbo with promptVideo data URL is specified in the service contract
-    const response = await client.videoToVideo.create({
-      model: 'gen4_turbo',
+    // SDK requires gen4_aleph with a videoUri (HTTPS URL).
+    // We pass the base64 data URL via cast; caller should upload first if API rejects.
+    const response = await (client.videoToVideo.create as (p: unknown) => Promise<{ id: string }>)({
+      model: 'gen4_aleph',
       promptVideo: dataUrl,
       promptText: editPrompt,
     })

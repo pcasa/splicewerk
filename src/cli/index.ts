@@ -2,17 +2,10 @@
 import 'dotenv/config'
 import path from 'node:path'
 import { Command } from 'commander'
-import { Inngest } from 'inngest'
+import { inngest } from '../inngest/client.js'
 import { catalogAssets } from '../services/asset-catalog.js'
 import { generateEDL } from '../services/llm.js'
 import { loadFormatPresets } from '../services/ffmpeg.js'
-
-// ─── Inngest client ───────────────────────────────────────────────────────────
-
-const inngest = new Inngest({
-  id: 'splicewerk',
-  eventKey: process.env.INNGEST_EVENT_KEY,
-})
 
 // ─── Handlers (exported for testing) ─────────────────────────────────────────
 

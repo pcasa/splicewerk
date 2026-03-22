@@ -1,0 +1,28 @@
+{
+  "name": "Autobahn Syndicate",
+  "tagline": "Performance Driving Experience",
+  "industry": "German automotive performance and luxury driving experiences",
+  "mood": "high-budget AMG / Porsche / BMW M-series commercial — dramatic, cinematic, explosive",
+
+  "colors": {
+    "primary":    "#E02828",
+    "secondary":  "#F46E2C",
+    "accent":     "#C0C0C0",
+    "background": "#0A0A0A",
+    "text":       "#F7F6F5"
+  },
+
+  "fonts": {
+    "heading": "Montserrat",
+    "body":    "Montserrat",
+    "weight":  "600",
+    "letterSpacing": "6px",
+    "taglineOpacity": 0.85
+  },
+
+  "assets": {
+    "logo": "projects/test-intro/raw/GoalImage.png"
+  },
+
+  "nemotronContext": "Autobahn Syndicate is a premium performance driving experience brand inspired by German automotive culture. The logo features a bold chevron shield emblem alongside the wordmark. Brand identity is aggressive, high-performance, and cinematic — think AMG Black Series, Porsche GT division, BMW M. Colors are deep red (#E02828) and turbo orange (#F46E2C) against near-black (#0A0A0A). Font is Montserrat — geometric, modern, authoritative. Effects should feel like fire, plasma, and raw mechanical energy."
+}

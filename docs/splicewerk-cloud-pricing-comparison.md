@@ -4,6 +4,28 @@
 
 ---
 
+## Active Subscriptions (Review Monthly)
+
+> Update this table whenever you add, cancel, or change a plan. Review at the end of each month against actual output volume.
+
+| Service | Plan | Monthly Cost | Status | Keep? |
+|---------|------|-------------|--------|-------|
+| **Runway** | Standard annual | $12 | ✅ Active | Pipeline video generation |
+| **ElevenLabs** | Starter | $5 | ✅ Active | SFX + audio |
+| **Inngest** | Free tier | $0 | ✅ Active | Workflow orchestration |
+| **Shotstack** | Monthly | $39 | ✅ Active | Video assembly (replacing FFmpeg) |
+| **Epidemic Sound** | — | — | ⬜ Not yet | Music + safelist |
+| **OpenArt** | — | — | ⬜ Not yet | Manual creative exploration |
+| **NVIDIA / Ollama** | Free | $0 | ✅ Active | LLM (cloud model) |
+| **Total** | | **$56/mo** | | |
+
+### Shotstack — Worth Keeping?
+Review after first 10 videos. Key question: does cloud rendering save enough debugging time vs. $39/mo?
+- Break-even vs. free FFmpeg: ~4 hours of debugging time saved per month
+- If pipeline runs reliably end-to-end, keep it. If you hit render limits, check usage dashboard.
+
+---
+
 ## Service Summary
 
 | Service | Role in Splicewerk | Has API? | Free Tier? |
@@ -210,7 +232,39 @@ The LLM selects from this tagged library based on the video prompt. Epidemic Sou
 
 ---
 
-## 6. OpenArt (Multi-Model Creative Hub)
+## 6. Shotstack (Video Assembly API)
+
+### What It Is
+Shotstack is a cloud video editing API — you send it a JSON edit spec and it renders the final MP4 in the cloud. No local FFmpeg, no encoding issues, no VideoToolbox crashes. Designed exactly for automated video production pipelines.
+
+### Plans
+
+| Plan | Monthly | Renders/mo | Max Resolution | Key Features |
+|------|---------|-----------|----------------|--------------|
+| **Free** | $0 | 10 | 720p | Watermarked |
+| **Starter** | $39 | 400 | 1080p | No watermark, webhooks |
+| **Scale** | $99 | 1,500 | 4K | Priority queue, custom fonts |
+| **Enterprise** | Custom | Unlimited | 4K+ | SLA, dedicated queue |
+
+### How It Fits the Pipeline
+Replaces the FFmpeg concat/reformat/trim steps entirely:
+- **Trim clips** → Shotstack timeline `clip` with `start`/`length`
+- **Concat segments** → Shotstack timeline track ordering
+- **Text overlays** → Shotstack `HTMLAsset` or `TitleAsset`
+- **Reformat for platforms** → Shotstack output `size` (1920x1080, 1080x1920, etc.)
+- **Audio mixing** → Shotstack `AudioAsset` with volume controls
+
+### What You Need
+1. API key from `dashboard.shotstack.io`
+2. Add `SHOTSTACK_API_KEY` to `.env`
+3. Shotstack can reference files by URL — Runway output videos need to be publicly accessible (upload to S3/Cloudinary first, or use Shotstack's own hosted ingestion)
+
+### Recommendation for Splicewerk
+**Starter ($39/mo) is the right tier.** 400 renders/month covers ~13 videos/day — far more than needed. The no-watermark 1080p output and webhooks (so Inngest can get notified when rendering completes) are the key features.
+
+---
+
+## 7. OpenArt (Multi-Model Creative Hub)
 
 ### What It Is
 OpenArt is a unified web UI giving you access to 100+ AI models (Kling 3.0, Veo 3, Runway Gen-4, Wan 2.5, Nano Banana, and more) under one subscription with shared credits. One subscription replaces juggling multiple service accounts for manual creative exploration.

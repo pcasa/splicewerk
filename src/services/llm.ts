@@ -26,10 +26,21 @@ export interface ChannelConfig {
 
 // ─── Constants ───
 
-const DEFAULT_MODEL = 'nemotron-3-super:cloud'
-const FALLBACK_MODEL = process.env.OLLAMA_FALLBACK_MODEL ?? 'nemotron-3-nano:4b'
+// Primary: NVIDIA NIM hosted endpoint (requires NVIDIA_API_KEY)
+const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY ?? ''
+const NIM_BASE_URL = 'https://integrate.api.nvidia.com/v1'
+const DEFAULT_MODEL = process.env.LLM_MODEL ?? 'meta/llama-3.3-70b-instruct'
+
+// Nemotron models on NIM — used for the AI-to-AI pipeline (Nemotron → Runway)
+// nemotron-nano-12b-v2-vl: vision-language, can analyze logo images directly
+// nemotron-3-nano-30b-a3b: text-only but lightweight and fast
+const NEMOTRON_VISION_MODEL = 'nvidia/nemotron-nano-12b-v2-vl'
+const NEMOTRON_TEXT_MODEL   = 'nvidia/nemotron-3-nano-30b-a3b'
+
+// Fallback: local Ollama (no auth required)
 const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://localhost:11434'
-const BASE_URL = `${OLLAMA_HOST}/v1`
+const OLLAMA_BASE_URL = `${OLLAMA_HOST}/v1`
+const FALLBACK_MODEL = process.env.OLLAMA_FALLBACK_MODEL ?? 'nemotron-3-nano:4b'
 const RETRY_DELAYS_MS = [500, 1000, 2000]
 const LLM_TIMEOUT_MS = 30 * 60 * 1000 // 30 minutes
 
@@ -116,7 +127,9 @@ EDL (Edit Decision List) JSON Schema:
 
 export async function callLLM(
   messages: ChatMessage[],
-  options: LLMOptions = {}
+  options: LLMOptions = {},
+  baseUrl = NIM_BASE_URL,
+  authHeader?: string
 ): Promise<Result<string>> {
   const {
     model = DEFAULT_MODEL,
@@ -137,9 +150,12 @@ export async function callLLM(
 
       let response: Response
       try {
-        response = await fetch(`${BASE_URL}/chat/completions`, {
+        response = await fetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authHeader ? { 'Authorization': authHeader } : {}),
+          },
           body: JSON.stringify({
             model,
             messages,
@@ -241,14 +257,15 @@ IMPORTANT: Output ONLY valid JSON matching the EDL schema above. Do not include 
     { role: 'user', content: prompt },
   ]
 
-  // Try primary (cloud) model first
+  // Try primary model via NVIDIA NIM
   console.log(`[LLM] Generating EDL with model=${DEFAULT_MODEL}`)
-  let result = await callLLM(messages, { model: DEFAULT_MODEL })
+  const nimAuth = NVIDIA_API_KEY ? `Bearer ${NVIDIA_API_KEY}` : undefined
+  let result = await callLLM(messages, { model: DEFAULT_MODEL }, NIM_BASE_URL, nimAuth)
 
-  // Fallback to nano model if cloud model fails
+  // Fallback to local Ollama if NIM fails
   if (!result.ok) {
-    console.warn(`[LLM] Cloud model failed, falling back to ${FALLBACK_MODEL}`)
-    result = await callLLM(messages, { model: FALLBACK_MODEL })
+    console.warn(`[LLM] NIM model failed, falling back to local Ollama: ${FALLBACK_MODEL}`)
+    result = await callLLM(messages, { model: FALLBACK_MODEL }, OLLAMA_BASE_URL)
   }
 
   if (!result.ok) {
@@ -284,6 +301,114 @@ IMPORTANT: Output ONLY valid JSON matching the EDL schema above. Do not include 
   }
 
   return { ok: true, value: parsed as EDL }
+}
+
+// ─── Cinematic Prompt Generation ───
+
+export interface BrandContext {
+  brandName: string
+  tagline?: string
+  industry?: string
+  colors?: { primary?: string; secondary?: string; accent?: string }
+  mood?: string
+}
+
+/**
+ * Use Nemotron (via NIM) to generate a Runway Gen-4 cinematic prompt for a brand logo reveal.
+ *
+ * If logoImagePath is provided, uses nemotron-nano-12b-v2-vl (vision-language) to analyze
+ * the actual logo image and derive brand identity automatically — no hardcoded config needed.
+ *
+ * This is the core AI-to-AI POC: Nemotron generates the creative brief → Runway executes it.
+ *
+ * Falls back to text-only Nemotron, then Ollama.
+ */
+export async function generateCinematicPrompt(
+  brand: BrandContext,
+  logoImagePath?: string
+): Promise<Result<string>> {
+  const nimAuth = NVIDIA_API_KEY ? `Bearer ${NVIDIA_API_KEY}` : undefined
+
+  const systemPrompt = `You are a creative director specializing in cinematic brand video production.
+Write a Runway Gen-4 image-to-video prompt for a logo reveal on a pure black background.
+The prompt must describe: cinematic effects (light rays, sparks, shimmer, embers, fog), color palette, camera movement, and overall feel.
+Static locked-off camera — no zoom, no push-in. Wide shot that holds the full logo in frame.
+Keep it under 900 characters. Output ONLY the prompt text — no explanation, no preamble.`
+
+  // ── Vision path: Nemotron VL analyzes the actual logo image ──────────────────
+  if (logoImagePath && nimAuth) {
+    console.log('[Nemotron] Analyzing logo image with vision model...')
+    try {
+      const imageBuffer = await import('node:fs/promises').then(fs => fs.readFile(logoImagePath))
+      const ext = logoImagePath.endsWith('.png') ? 'png' : 'jpeg'
+      const dataUrl = `data:image/${ext};base64,${imageBuffer.toString('base64')}`
+
+      const visionMessages = [
+        { role: 'system' as const, content: systemPrompt },
+        {
+          role: 'user' as const,
+          content: [
+            {
+              type: 'image_url' as const,
+              image_url: { url: dataUrl },
+            },
+            {
+              type: 'text' as const,
+              text: `This is the logo for ${brand.brandName} (${brand.industry ?? 'performance automotive'}).
+Analyze the logo's visual style, colors, and composition, then write a Runway Gen-4 prompt
+that animates it with spectacular cinematic effects matching the brand's identity.`,
+            },
+          ] as unknown as string,
+        },
+      ]
+
+      const visionResult = await callLLM(
+        visionMessages,
+        { model: NEMOTRON_VISION_MODEL, temperature: 0.9, maxTokens: 512 },
+        NIM_BASE_URL,
+        nimAuth
+      )
+      if (visionResult.ok) {
+        console.log('[Nemotron] Vision prompt generated successfully')
+        return visionResult
+      }
+      console.warn(`[Nemotron] Vision model failed: ${visionResult.error} — falling back to text`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[Nemotron] Vision path error: ${msg} — falling back to text`)
+    }
+  }
+
+  // ── Text path: Nemotron text model with brand context ────────────────────────
+  const colorDesc = brand.colors
+    ? Object.entries(brand.colors).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(', ')
+    : 'not specified'
+
+  const textMessages: ChatMessage[] = [
+    { role: 'system', content: systemPrompt },
+    {
+      role: 'user',
+      content: `Brand: ${brand.brandName}
+Industry: ${brand.industry ?? 'automotive performance'}
+Brand Colors: ${colorDesc}
+Tagline: ${brand.tagline ?? 'none'}
+Mood: ${brand.mood ?? 'cinematic, dramatic, high-budget'}
+Write a Runway Gen-4 prompt that animates this logo on a pure black background with spectacular cinematic effects.`,
+    },
+  ]
+
+  if (nimAuth) {
+    const textResult = await callLLM(
+      textMessages,
+      { model: NEMOTRON_TEXT_MODEL, temperature: 0.9, maxTokens: 512 },
+      NIM_BASE_URL,
+      nimAuth
+    )
+    if (textResult.ok) return textResult
+    console.warn(`[Nemotron] Text model failed: ${textResult.error} — falling back to Ollama`)
+  }
+
+  return callLLM(textMessages, { model: FALLBACK_MODEL, temperature: 0.9, maxTokens: 512 }, OLLAMA_BASE_URL)
 }
 
 // ─── Helpers ───

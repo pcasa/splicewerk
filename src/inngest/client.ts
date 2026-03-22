@@ -1,10 +1,20 @@
 import { Inngest } from 'inngest'
 import 'dotenv/config'
 
+const isDev = process.env.INNGEST_DEV === '1'
+
 export const inngest = new Inngest({
   id: 'splicewerk',
-  eventKey: process.env.INNGEST_EVENT_KEY,
+  // In dev mode use a local dummy key — real key routes to cloud
+  eventKey: isDev ? 'local' : process.env.INNGEST_EVENT_KEY,
+  isDev,
+  ...(isDev && { baseUrl: 'http://localhost:8288' }),
 })
+
+export type ApprovalEvent = {
+  name: 'brand/approved'
+  data: { note?: string }
+}
 
 export type ProductionRequestedEvent = {
   name: 'video/production-requested'

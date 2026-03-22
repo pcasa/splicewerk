@@ -1,13 +1,32 @@
 import { execFile } from "child_process";
+import { existsSync } from "fs";
 import { promisify } from "util";
 import { readFileSync, writeFileSync, unlinkSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { tmpdir } from "os";
 import YAML from "yaml";
 import type { FormatPreset } from "../edl/types.js";
 
 const execFileAsync = promisify(execFile);
+
+// ─── FFmpeg/FFprobe Path Resolution ──────────────────────────────────────────
+
+const FFMPEG_SEARCH_PATHS = [
+  "/opt/homebrew/bin/ffmpeg",
+  "/usr/local/bin/ffmpeg",
+  "/usr/bin/ffmpeg",
+];
+
+function resolveFFmpegPath(): string {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  for (const p of FFMPEG_SEARCH_PATHS) {
+    if (existsSync(p)) return p;
+  }
+  return "ffmpeg";
+}
+
+const FFMPEG_BIN = resolveFFmpegPath();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -123,7 +142,7 @@ function log(level: "info" | "debug", message: string, data?: Record<string, unk
 async function runFFmpeg(args: string[]): Promise<Result<string>> {
   log("info", "Running ffmpeg", { args });
   try {
-    const { stdout, stderr } = await execFileAsync("ffmpeg", args);
+    const { stdout, stderr } = await execFileAsync(FFMPEG_BIN, args);
     log("debug", "ffmpeg stdout", { stdout });
     log("debug", "ffmpeg stderr", { stderr });
     return { ok: true, value: stdout };
@@ -136,6 +155,38 @@ async function runFFmpeg(args: string[]): Promise<Result<string>> {
 }
 
 // ─── Functions ───
+
+const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
+
+function isImageFile(filePath: string): boolean {
+  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXTENSIONS.has(`.${ext}`);
+}
+
+export async function imageToClip(
+  input: string,
+  durationSec: number,
+  output: string,
+  width = 1920,
+  height = 1080
+): Promise<Result<string>> {
+  log("info", "imageToClip", { input, durationSec, output });
+
+  const args = [
+    "-y",
+    "-loop", "1",
+    "-i", input,
+    "-t", String(durationSec),
+    "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
+    "-c:v", "h264_videotoolbox",
+    "-allow_sw", "1",
+    "-pix_fmt", "yuv420p",
+    "-r", "30",
+    output,
+  ];
+
+  return runFFmpeg(args);
+}
 
 export async function trimClip(
   input: string,
@@ -151,6 +202,7 @@ export async function trimClip(
     "-to", String(endSec),
     "-i", input,
     "-c:v", "h264_videotoolbox",
+    "-allow_sw", "1",
     "-c:a", "aac",
     output,
   ];
@@ -164,9 +216,10 @@ export async function concatClips(
 ): Promise<Result<string>> {
   log("info", "concatClips", { inputs, output });
 
-  // Write temp concat file
+  // Write temp concat file — use absolute paths so ffmpeg can find them from /tmp
   const concatFile = join(tmpdir(), `splicewerk-concat-${Date.now()}.txt`);
-  const lines = inputs.map((f) => `file '${f}'`).join("\n");
+  const lines = inputs.map((f) => `file '${resolve(f)}'`).join("\n");
+  log("info", "concatClips file list", { concatFile, lines });
   writeFileSync(concatFile, lines, "utf-8");
 
   const args = [
@@ -175,6 +228,7 @@ export async function concatClips(
     "-safe", "0",
     "-i", concatFile,
     "-c:v", "h264_videotoolbox",
+    "-allow_sw", "1",
     "-c:a", "aac",
     output,
   ];

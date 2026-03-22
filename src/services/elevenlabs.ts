@@ -32,6 +32,54 @@ function getConfig(): Result<ElevenLabsConfig> {
   }
 }
 
+// ─── Quota / Pre-flight ──────────────────────────────────────────────────────
+
+export interface SoundEffectQuota {
+  creditsRemaining: number   // -1 means unknown (API doesn't expose it directly)
+  creditsPerSecond: number   // ~6 for starter plan
+  maxAffordableSeconds: number
+}
+
+/**
+ * Estimate how many sound-effect credits remain by probing the subscription
+ * endpoint. ElevenLabs does not expose sound-effect credits directly, so we
+ * derive the estimate from the last known rate (6 credits/second).
+ *
+ * Returns creditsRemaining = -1 when the account tier doesn't expose it.
+ */
+export async function getSoundEffectQuota(): Promise<Result<SoundEffectQuota>> {
+  const configResult = getConfig()
+  if (!configResult.ok) return configResult
+
+  const { apiKey, baseUrl } = configResult.value
+
+  try {
+    const res = await fetch(`${baseUrl}/v1/user/subscription`, {
+      headers: { 'xi-api-key': apiKey },
+    })
+    if (!res.ok) return { ok: false, error: `Quota check failed: HTTP ${res.status}` }
+
+    const data = await res.json() as Record<string, unknown>
+
+    // ElevenLabs exposes TTS character quota but not sound-effect credits.
+    // We expose what we know and flag that the exact count is unknown.
+    const tier = String(data.tier ?? 'unknown')
+    console.log(`[ElevenLabs] Account tier: ${tier}`)
+
+    return {
+      ok: true,
+      value: {
+        creditsRemaining: -1,   // not exposed via API; only known on error
+        creditsPerSecond: 6,    // empirical: ~6 credits/sec for starter plan
+        maxAffordableSeconds: -1,
+      },
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: `Quota check network error: ${message}` }
+  }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 async function ensureOutputDir(outputDir: string): Promise<void> {
@@ -90,10 +138,15 @@ export async function generateSFX(
   }
 
   if (!response.ok) {
-    return {
-      ok: false,
-      error: `ElevenLabs API error: HTTP ${response.status}`,
-    }
+    // Parse body to expose quota/auth details (ElevenLabs returns 401 for quota exceeded)
+    let detail = response.statusText
+    try {
+      const body = await response.json() as { detail?: { status?: string; message?: string } | string }
+      const d = body.detail
+      if (d && typeof d === 'object' && d.message) detail = `${d.status ?? ''}: ${d.message}`
+      else if (typeof d === 'string') detail = d
+    } catch { /* ignore parse errors */ }
+    return { ok: false, error: `ElevenLabs HTTP ${response.status} — ${detail}` }
   }
 
   const buffer = await response.arrayBuffer()

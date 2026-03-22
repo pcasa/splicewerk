@@ -1,13 +1,35 @@
 node_modules/
 .env
 dist/
+
+# IDE / OS
+.DS_Store
+.claude/
+
+# Video / audio (use Supabase Storage for media assets)
+*.mp4
+*.mov
+*.MOV
+*.avi
+*.mkv
+*.mp3
+*.HEIC
+*.heic
+*.aae
+
+# Generated pipeline artifacts inside projects/
+projects/**/*.jpg
+projects/**/*.png
+
+# Local brand assets — these belong in Supabase Storage, not git
+assets/logos/
+
+# Project output folders
 projects/*/rendered/
 projects/*/prepared/
 projects/*/output/
-*.mp4
-*.mov
-*.avi
-*.mkv
+
+# Python
 __pycache__/
 .ruff_cache/
 .venv/

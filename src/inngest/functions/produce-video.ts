@@ -2,7 +2,10 @@ import * as fs from 'node:fs/promises'
 import { inngest } from '../client.js'
 import { catalogAssets } from '../../services/asset-catalog.js'
 import { generateEDL } from '../../services/llm.js'
-import { trimClip, concatClips, reformat, mixAudio } from '../../services/ffmpeg.js'
+import { trimClip, loadFormatPresets } from '../../services/ffmpeg.js'
+import { imageToVideo, textToVideo } from '../../services/runway.js'
+import { uploadFile, assembleClips } from '../../services/shotstack.js'
+import type { AssemblySegment, AssemblyOptions } from '../../services/shotstack.js'
 import type { EDL, TimelineSegment } from '../../edl/types.js'
 
 // ─── Types ───
@@ -21,6 +24,24 @@ type PipelineEvent = {
     projectName: string
     dryRun?: boolean
   }
+}
+
+// ─── Helpers ───
+
+/** Parse "M:SS" or "SS.s" trim timestamps into seconds */
+function parseTrimTime(t: string): number {
+  const parts = t.trim().split(':')
+  if (parts.length === 2) {
+    return parseInt(parts[0]!, 10) * 60 + parseFloat(parts[1]!)
+  }
+  return parseFloat(t)
+}
+
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
+
+function isImageSource(filePath: string): boolean {
+  const ext = '.' + (filePath.split('.').pop()?.toLowerCase() ?? '')
+  return IMAGE_EXTS.has(ext)
 }
 
 // ─── Pipeline Handler (exported for testing) ───
@@ -82,76 +103,121 @@ export async function produceVideoPipeline(
     await fs.mkdir(outputDir, { recursive: true })
   })
 
-  // Step 5: Render segments
-  const segmentPaths = await step.run('render-segments', async (): Promise<string[]> => {
-    const paths: string[] = []
-    const ffmpegSegments = edl.timeline.filter(
-      (seg: TimelineSegment) => seg.processor === 'ffmpeg' && seg.source
-    )
+  // Step 5: Render segments → local paths + durations
+  const renderedSegments = await step.run(
+    'render-segments',
+    async (): Promise<{ path: string; durationSeconds: number }[]> => {
+      const results: { path: string; durationSeconds: number }[] = []
 
-    for (let i = 0; i < ffmpegSegments.length; i++) {
-      const seg = ffmpegSegments[i]
-      const outputPath = `${renderedDir}/seg${i + 1}.mp4`
-
-      if (seg.trim && seg.source) {
-        const [startStr, endStr] = seg.trim.split('-')
-        const startSec = parseFloat(startStr ?? '0')
-        const endSec = parseFloat(endStr ?? '0')
-        const result = await trimClip(seg.source, startSec, endSec, outputPath)
-        if (!result.ok) {
-          throw new Error(`Failed to trim segment ${seg.id}: ${result.error}`)
-        }
-        paths.push(outputPath)
-      } else if (seg.source) {
-        paths.push(seg.source)
+      // Build filename → full path lookup from the manifest
+      const assetByFilename = new Map(
+        manifest.files.map((f) => [f.filename.toLowerCase(), f.path])
+      )
+      const resolveSource = (source: string): string => {
+        if (source.startsWith('/')) return source
+        return assetByFilename.get(source.toLowerCase()) ?? source
       }
-    }
 
-    return paths
-  })
+      for (let i = 0; i < edl.timeline.length; i++) {
+        const seg = edl.timeline[i] as TimelineSegment
+        const outputPath = `${renderedDir}/seg${i + 1}.mp4`
 
-  // Step 6: Composite — concat all segments into master
-  const masterPath = await step.run('composite', async (): Promise<string> => {
-    const masterOutput = `${renderedDir}/master.mp4`
-    const result = await concatClips(segmentPaths, masterOutput)
-    if (!result.ok) {
-      throw new Error(`Failed to concat clips: ${result.error}`)
-    }
-    return masterOutput
-  })
+        const sourcePath = seg.source ? resolveSource(seg.source) : null
+        const sourceIsImage = sourcePath ? isImageSource(sourcePath) : false
 
-  // Step 7: Audio mix
-  const mixedMasterPath = await step.run('audio-mix', async (): Promise<string> => {
-    if (!edl.audio.backgroundMusic) {
-      return masterPath
-    }
-    const mixedOutput = `${renderedDir}/master_mixed.mp4`
-    const { source: musicSource, volume: musicVolume } = edl.audio.backgroundMusic
-    const originalVolume = edl.audio.originalAudio?.volume ?? 1.0
-    const result = await mixAudio(
-      masterPath,
-      musicSource,
-      { video: originalVolume, audio: musicVolume },
-      mixedOutput
-    )
-    if (!result.ok) {
-      throw new Error(`Failed to mix audio: ${result.error}`)
-    }
-    return mixedOutput
-  })
+        if (seg.processor === 'runway' || sourceIsImage) {
+          // Runway: image → video or text → video
+          const duration = (seg.durationSeconds === 5 || seg.durationSeconds === 10)
+            ? seg.durationSeconds
+            : 5
+          const segPrompt = seg.prompt ?? `Cinematic motion for: ${seg.type}`
 
-  // Step 8: Reformat outputs
-  const outputs = await step.run('reformat-outputs', async (): Promise<string[]> => {
+          if (sourcePath) {
+            const result = await imageToVideo(sourcePath, segPrompt, duration)
+            if (!result.ok) throw new Error(`Runway imageToVideo failed for ${seg.id}: ${result.error}`)
+            results.push({ path: result.value, durationSeconds: duration })
+          } else {
+            const result = await textToVideo(segPrompt, duration)
+            if (!result.ok) throw new Error(`Runway textToVideo failed for ${seg.id}: ${result.error}`)
+            results.push({ path: result.value, durationSeconds: duration })
+          }
+
+        } else if (seg.processor === 'ffmpeg' && sourcePath) {
+          if (seg.trim) {
+            const [startStr, endStr] = seg.trim.split('-')
+            const startSec = parseTrimTime(startStr ?? '0')
+            const endSec = parseTrimTime(endStr ?? '0')
+            const result = await trimClip(sourcePath, startSec, endSec, outputPath)
+            if (!result.ok) throw new Error(`Failed to trim segment ${seg.id}: ${result.error}`)
+            results.push({ path: outputPath, durationSeconds: endSec - startSec })
+          } else {
+            const duration = seg.durationSeconds ?? 5
+            results.push({ path: sourcePath, durationSeconds: duration })
+          }
+        }
+        // skip segments with no processor or unsupported processor (elevenlabs, etc.)
+      }
+
+      return results
+    }
+  )
+
+  // Step 6: Upload rendered segments to Shotstack ingest
+  const hostedSegments = await step.run(
+    'upload-segments',
+    async (): Promise<AssemblySegment[]> => {
+      const segments: AssemblySegment[] = []
+      for (const seg of renderedSegments) {
+        const result = await uploadFile(seg.path)
+        if (!result.ok) throw new Error(`Shotstack upload failed for ${seg.path}: ${result.error}`)
+        segments.push({ url: result.value, durationSeconds: seg.durationSeconds })
+      }
+      return segments
+    }
+  )
+
+  // Step 7: Upload background music if it's a local file
+  const musicAsset = await step.run(
+    'upload-background-music',
+    async (): Promise<{ url: string; volume: number; fadeOut?: number } | null> => {
+      if (!edl.audio.backgroundMusic?.source) return null
+      const { source, volume, fadeOut } = edl.audio.backgroundMusic
+      if (source.startsWith('http://') || source.startsWith('https://')) {
+        return { url: source, volume, fadeOut: fadeOut > 0 ? fadeOut : undefined }
+      }
+      // Skip if the local file doesn't exist (LLM may hallucinate filenames)
+      try { await fs.access(source) } catch { return null }
+      const result = await uploadFile(source)
+      if (!result.ok) throw new Error(`Music upload failed: ${result.error}`)
+      return { url: result.value, volume, fadeOut: fadeOut > 0 ? fadeOut : undefined }
+    }
+  )
+
+  // Step 8: Assemble one output per format via Shotstack
+  const outputs = await step.run('assemble-outputs', async (): Promise<string[]> => {
     const outputPaths: string[] = []
+    const presets = loadFormatPresets()
+
     for (const format of formats) {
+      const preset = presets[format]
+      if (!preset) throw new Error(`Unknown format preset: ${format}`)
+
       const formatDir = `${outputDir}/${format}`
       await fs.mkdir(formatDir, { recursive: true })
       const outputPath = `${formatDir}/output.mp4`
-      const result = await reformat(mixedMasterPath, format, outputPath)
-      if (!result.ok) {
-        throw new Error(`Failed to reformat to ${format}: ${result.error}`)
+
+      const options: AssemblyOptions = {
+        width: preset.width,
+        height: preset.height,
+        fps: preset.fps,
       }
-      outputPaths.push(outputPath)
+      if (musicAsset) {
+        options.backgroundMusic = musicAsset
+      }
+
+      const result = await assembleClips(hostedSegments, outputPath, options)
+      if (!result.ok) throw new Error(`Shotstack assembly failed for ${format}: ${result.error}`)
+      outputPaths.push(result.value)
     }
     return outputPaths
   })
@@ -167,7 +233,7 @@ export async function produceVideoPipeline(
   return {
     projectName,
     edl,
-    masterPath: mixedMasterPath,
+    masterPath: null,  // assembled in Shotstack cloud, no local master
     outputs,
     dryRun: false,
   }
@@ -176,12 +242,8 @@ export async function produceVideoPipeline(
 // ─── Inngest Function ───
 
 export const produceVideo = inngest.createFunction(
-  {
-    id: 'produce-video',
-    name: 'Produce Video',
-    triggers: [{ event: 'video/production-requested' }],
-  },
+  { id: 'produce-video', name: 'Produce Video', triggers: [{ event: 'video/production-requested' }] },
   async ({ event, step }) => {
-    return produceVideoPipeline(event as PipelineEvent, step as unknown as StepTools)
+    return produceVideoPipeline(event as unknown as PipelineEvent, step as unknown as StepTools)
   }
 )
