@@ -1,9 +1,11 @@
 import 'dotenv/config'
 import * as fs from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { serve } from 'inngest/node'
+import busboy from 'busboy'
 import { inngest } from './inngest/client.js'
 import { produceVideo } from './inngest/functions/produce-video.js'
 import { logoReveal } from './inngest/functions/logo-reveal.js'
@@ -244,6 +246,60 @@ const server = createServer(async (req, res) => {
     } catch {
       return json(res, { summary: [] })
     }
+  }
+
+  // Upload assets for video production
+  if (url === '/api/upload' && req.method === 'POST') {
+    const timestamp = Date.now()
+    const sessionDir = `projects/uploads-${timestamp}`
+    const rawDir = `${sessionDir}/raw`
+    await fs.mkdir(rawDir, { recursive: true })
+
+    const files: string[] = []
+
+    await new Promise<void>((resolve, reject) => {
+      const bb = busboy({ headers: req.headers })
+      bb.on('file', (_field, stream, info) => {
+        const { filename } = info
+        const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_')
+        files.push(safeName)
+        const dest = `${rawDir}/${safeName}`
+        const writeStream = createWriteStream(dest)
+        stream.pipe(writeStream)
+        writeStream.on('error', reject)
+      })
+      bb.on('close', resolve)
+      bb.on('error', reject)
+      req.pipe(bb)
+    })
+
+    return json(res, { sessionDir, rawDir, files })
+  }
+
+  // Trigger video production pipeline
+  if (url === '/api/produce' && req.method === 'POST') {
+    const body = await readBody(req) as Record<string, unknown>
+    const sessionDir = String(body.sessionDir ?? '')
+    const projectName = String(body.projectName ?? `production-${Date.now()}`)
+    const formats = Array.isArray(body.formats) ? body.formats as string[] : ['youtube']
+    const dryRun = body.dryRun === true
+    let prompt = String(body.prompt ?? '')
+
+    // Prepend intro context if logo reveal exists
+    try {
+      await fs.access('projects/cinematic-intro/logo-reveal.mp4')
+      prompt = `A pre-rendered brand intro video is available at: projects/cinematic-intro/logo-reveal.mp4. Include it as the very first segment of the timeline.\n\n${prompt}`
+    } catch { /* no intro available */ }
+
+    const id = await sendInngestEvent('video/production-requested', {
+      prompt,
+      assetsDir: `${sessionDir}/raw`,
+      formats,
+      projectName,
+      dryRun,
+    })
+
+    return json(res, { id, sessionDir, projectName })
   }
 
   res.writeHead(404)

@@ -3,6 +3,7 @@ import { RecentRuns } from '@/components/RecentRuns'
 import { ServicesPanel } from '@/components/ServicesPanel'
 import { NemotronChat } from '@/components/NemotronChat'
 import { CostPanel } from '@/components/CostPanel'
+import { ProduceVideoPanel } from '@/components/ProduceVideoPanel'
 
 export default function DashboardPage() {
   return (
@@ -52,6 +53,7 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
           {/* Left column */}
           <div className="xl:col-span-2 flex flex-col gap-6">
+            <ProduceVideoPanel />
             <PipelineControls />
             <RecentRuns />
             <CostPanel />
