@@ -2,6 +2,7 @@ import { PipelineControls } from '@/components/PipelineControls'
 import { RecentRuns } from '@/components/RecentRuns'
 import { ServicesPanel } from '@/components/ServicesPanel'
 import { NemotronChat } from '@/components/NemotronChat'
+import { CostPanel } from '@/components/CostPanel'
 
 export default function DashboardPage() {
   return (
@@ -53,6 +54,7 @@ export default function DashboardPage() {
           <div className="xl:col-span-2 flex flex-col gap-6">
             <PipelineControls />
             <RecentRuns />
+            <CostPanel />
             <ServicesPanel />
           </div>
 

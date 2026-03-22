@@ -8,7 +8,7 @@ import { inngest } from './inngest/client.js'
 import { produceVideo } from './inngest/functions/produce-video.js'
 import { logoReveal } from './inngest/functions/logo-reveal.js'
 import { callLLM } from './services/llm.js'
-import { logPrompt, getRecentRuns } from '@splicewerk/db'
+import { logPrompt, getRecentRuns, getRunCosts, getRunCostsSummary } from '@splicewerk/db'
 
 const handler = serve({ client: inngest, functions: [produceVideo, logoReveal] })
 const PORT      = Number(process.env.PORT ?? 3000)
@@ -223,6 +223,27 @@ const server = createServer(async (req, res) => {
         },
       ]
     })
+  }
+
+  // Cost ledger — recent run costs from DB
+  if (url === '/api/costs') {
+    try {
+      const runId = new URL(url, 'http://localhost').searchParams.get('runId') ?? undefined
+      const costs = runId ? await getRunCosts(runId) : []
+      return json(res, { costs })
+    } catch {
+      return json(res, { costs: [] })
+    }
+  }
+
+  // Cost summary — aggregated totals from run_costs view
+  if (url === '/api/costs/summary') {
+    try {
+      const summary = await getRunCostsSummary(20)
+      return json(res, { summary })
+    } catch {
+      return json(res, { summary: [] })
+    }
   }
 
   res.writeHead(404)
