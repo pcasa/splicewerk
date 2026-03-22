@@ -7,6 +7,7 @@ import { imageToVideo, textToVideo } from '../../services/runway.js'
 import { uploadFile, assembleClips } from '../../services/shotstack.js'
 import type { AssemblySegment, AssemblyOptions } from '../../services/shotstack.js'
 import type { EDL, TimelineSegment } from '../../edl/types.js'
+import { upsertRun, updateRunStatus, logCost } from '@splicewerk/db'
 
 // ─── Types ───
 
@@ -48,7 +49,8 @@ function isImageSource(filePath: string): boolean {
 
 export async function produceVideoPipeline(
   event: PipelineEvent,
-  step: StepTools
+  step: StepTools,
+  runId: string
 ): Promise<{
   projectName: string
   edl: EDL | null
@@ -57,6 +59,9 @@ export async function produceVideoPipeline(
   dryRun: boolean
 }> {
   const { prompt, assetsDir, formats, projectName, dryRun = false } = event.data
+
+  void upsertRun({ run_id: runId, function_id: 'produce-video', status: 'Running', started_at: new Date().toISOString(), prompt_used: prompt })
+    .catch(err => console.warn('[DB] upsertRun failed:', err))
 
   // Step 1: Catalog assets
   const manifest = await step.run('catalog-assets', async () => {
@@ -222,6 +227,9 @@ export async function produceVideoPipeline(
     return outputPaths
   })
 
+  void logCost({ run_id: runId, service: 'shotstack', operation: `render-${formats.join('+')}`, cost_usd: 0.10 * formats.length })
+    .catch(err => console.warn('[DB] logCost (shotstack) failed:', err))
+
   // Step 9: Generate thumbnail (stub)
   await step.run('generate-thumbnail', async () => {
     return {
@@ -229,6 +237,15 @@ export async function produceVideoPipeline(
       message: 'thumbnail generation pending CC-P4-01',
     }
   })
+
+  const outputUrl = outputs[0] ?? null
+  void updateRunStatus(runId, 'Completed', new Date().toISOString())
+    .catch(err => console.warn('[DB] updateRunStatus failed:', err))
+
+  if (outputUrl) {
+    void upsertRun({ run_id: runId, function_id: 'produce-video', status: 'Completed', started_at: new Date().toISOString(), output_url: `/media/${outputUrl}`, prompt_used: prompt })
+      .catch(err => console.warn('[DB] output_url upsert failed:', err))
+  }
 
   return {
     projectName,
@@ -243,7 +260,7 @@ export async function produceVideoPipeline(
 
 export const produceVideo = inngest.createFunction(
   { id: 'produce-video', name: 'Produce Video', triggers: [{ event: 'video/production-requested' }] },
-  async ({ event, step }) => {
-    return produceVideoPipeline(event as unknown as PipelineEvent, step as unknown as StepTools)
+  async ({ event, step, runId }) => {
+    return produceVideoPipeline(event as unknown as PipelineEvent, step as unknown as StepTools, runId)
   }
 )

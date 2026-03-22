@@ -10,7 +10,7 @@ import { inngest } from './inngest/client.js'
 import { produceVideo } from './inngest/functions/produce-video.js'
 import { logoReveal } from './inngest/functions/logo-reveal.js'
 import { callLLM } from './services/llm.js'
-import { logPrompt, getRecentRuns, getRunCosts, getRunCostsSummary } from '@splicewerk/db'
+import { logPrompt, getRecentRuns, getRunCosts, getRunCostsSummary, getPromptLogs } from '@splicewerk/db'
 
 const handler = serve({ client: inngest, functions: [produceVideo, logoReveal] })
 const PORT      = Number(process.env.PORT ?? 3000)
@@ -295,6 +295,61 @@ const server = createServer(async (req, res) => {
     })
 
     return json(res, { id, sessionDir, projectName })
+  }
+
+  // Serve local project output files (videos, images)
+  if (url.startsWith('/media/projects/')) {
+    const filePath = url.replace('/media/', '')
+    try {
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+      const mimeTypes: Record<string, string> = {
+        mp4: 'video/mp4', mov: 'video/quicktime', jpg: 'image/jpeg',
+        jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp',
+      }
+      const mime = mimeTypes[ext] ?? 'application/octet-stream'
+      const stat = await fs.stat(filePath)
+      const range = req.headers.range
+
+      if (range && mime.startsWith('video/')) {
+        const parts = range.replace(/bytes=/, '').split('-')
+        const start = parseInt(parts[0]!, 10)
+        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1
+        const chunkSize = end - start + 1
+        const fileStream = (await import('node:fs')).createReadStream(filePath, { start, end })
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': mime,
+        })
+        fileStream.pipe(res)
+      } else {
+        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size, 'Accept-Ranges': 'bytes' })
+        const fileStream = (await import('node:fs')).createReadStream(filePath)
+        fileStream.pipe(res)
+      }
+    } catch {
+      res.writeHead(404)
+      res.end('Not found')
+    }
+    return
+  }
+
+  // Single run detail — run record + costs + prompt logs
+  const runDetailMatch = url.match(/^\/api\/runs\/([^?]+)$/)
+  if (runDetailMatch && req.method === 'GET') {
+    const runId = runDetailMatch[1]!
+    try {
+      const [allRuns, costs, prompts] = await Promise.all([
+        getRecentRuns(50),
+        getRunCosts(runId),
+        getPromptLogs(20, runId),
+      ])
+      const run = allRuns.find(r => r.run_id === runId) ?? null
+      return json(res, { run, costs, prompts })
+    } catch {
+      return json(res, { run: null, costs: [], prompts: [] })
+    }
   }
 
   res.writeHead(404)
