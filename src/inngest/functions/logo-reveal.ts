@@ -7,6 +7,7 @@ import RunwayML from '@runwayml/sdk'
 import { inngest } from '../client.js'
 import { generateCinematicPrompt } from '../../services/llm.js'
 import { uploadFile, renderEdit } from '../../services/shotstack.js'
+import { upsertRun, updateRunStatus, logPrompt, logCost } from '@splicewerk/db'
 
 const execFileAsync = promisify(execFile)
 
@@ -54,7 +55,7 @@ export const logoReveal = inngest.createFunction(
     name: 'Brand Logo Reveal',
     triggers: [{ event: 'brand/logo-reveal-requested' }],
   },
-  async ({ event, step }) => {
+  async ({ event, step, runId }) => {
     const { projectDir, force = false, forceRunway = false, baselinePrompt = false } = event.data
 
     const PATHS = {
@@ -71,6 +72,9 @@ export const logoReveal = inngest.createFunction(
       if (force) return false
       try { const s = await fs.stat(p); return s.size > 0 } catch { return false }
     }
+
+    void upsertRun({ run_id: runId, function_id: 'logo-reveal', status: 'Running', started_at: new Date().toISOString() })
+      .catch(err => console.warn('[DB] upsertRun failed:', err))
 
     // ── Step 1: Load brand config ──────────────────────────────────────────────
     const brand = await step.run('load-brand-config', async (): Promise<BrandConfig> => {
@@ -137,6 +141,16 @@ export const logoReveal = inngest.createFunction(
         .slice(0, 999)
     })
 
+    void logPrompt({
+      run_id: runId,
+      source: baselinePrompt ? 'pipeline-baseline' : 'pipeline',
+      step: 'nemotron-generate-prompt',
+      model: 'nvidia/nemotron-nano-12b-v2-vl',
+      messages_in: [{ role: 'user', content: `Brand: ${brand.name} | Industry: ${brand.industry} | Mood: ${brand.mood}` }],
+      response_out: runwayPrompt,
+      metadata: { brand: brand.name, baselinePrompt, forceRunway, projectDir },
+    }).catch(err => console.warn('[DB] logPrompt failed:', err))
+
     // ── Step 4: Approval gate — runs before any credit spend ──────────────────
     // If Runway video is already cached, skip the gate (no credits will be spent).
     // Otherwise pause and wait for you to send "brand/approved" from Inngest dashboard.
@@ -186,6 +200,11 @@ export const logoReveal = inngest.createFunction(
       }
       throw new Error('Runway timed out after 5 minutes')
     })
+
+    if (!runwayIsCached) {
+      void logCost({ run_id: runId, service: 'runway', operation: 'image-to-video-gen4-turbo-10s', units: 125, unit_type: 'credits', cost_usd: 1.25 })
+        .catch(err => console.warn('[DB] logCost (runway) failed:', err))
+    }
 
     // ── Step 5: Audio source — upload raw MOV directly (Nemotron recommendation) ─
     // Nemotron advised: skip the MP3 intermediate entirely to avoid double re-encoding.
@@ -244,6 +263,9 @@ export const logoReveal = inngest.createFunction(
       return { path: PATHS.rawVideo }
     })
 
+    void logCost({ run_id: runId, service: 'shotstack', operation: 'render-1080p-30fps', cost_usd: 0.10 })
+      .catch(err => console.warn('[DB] logCost (shotstack) failed:', err))
+
     // ── Step 7: Burn tagline with brand fonts/colors ───────────────────────────
     await step.run('burn-tagline', async () => {
       const tagline = brand.tagline.toUpperCase()
@@ -281,6 +303,9 @@ export const logoReveal = inngest.createFunction(
       await fs.unlink(taglineOverlayPath).catch(() => {})
       return { output: PATHS.final }
     })
+
+    void updateRunStatus(runId, 'Completed', new Date().toISOString())
+      .catch(err => console.warn('[DB] updateRunStatus failed:', err))
 
     return {
       brand: brand.name,

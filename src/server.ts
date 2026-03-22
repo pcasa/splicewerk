@@ -8,6 +8,7 @@ import { inngest } from './inngest/client.js'
 import { produceVideo } from './inngest/functions/produce-video.js'
 import { logoReveal } from './inngest/functions/logo-reveal.js'
 import { callLLM } from './services/llm.js'
+import { logPrompt, getRecentRuns } from '@splicewerk/db'
 
 const handler = serve({ client: inngest, functions: [produceVideo, logoReveal] })
 const PORT      = Number(process.env.PORT ?? 3000)
@@ -86,8 +87,18 @@ const server = createServer(async (req, res) => {
     return json(res, { id })
   }
 
-  // Recent Inngest runs (local dev server uses GraphQL)
+  // Recent Inngest runs (DB first, fallback to Inngest GraphQL)
   if (url === '/api/runs') {
+    try {
+      const rows = await getRecentRuns(10)
+      if (rows.length > 0) {
+        return json(res, { runs: rows.map(r => ({ id: r.run_id, functionId: r.function_id, status: r.status, startedAt: r.started_at, endedAt: r.ended_at })) })
+      }
+    } catch {
+      // fall through to Inngest GraphQL
+    }
+
+    // Fallback: Inngest GraphQL (local dev before any DB runs exist)
     try {
       const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
       const gql = {
@@ -144,7 +155,15 @@ const server = createServer(async (req, res) => {
     ]
 
     const result = await callLLM(messages, { model: NEMOTRON, temperature: 0.4, maxTokens: 800 }, NIM_URL, `Bearer ${apiKey}`)
-    return json(res, { reply: result.ok ? result.value : `Error: ${result.error}` })
+    const reply = result.ok ? result.value : `Error: ${result.error}`
+    void logPrompt({
+      source: 'ui-chat',
+      model: NEMOTRON,
+      messages_in: messages,
+      response_out: result.ok ? result.value : undefined,
+      metadata: { historyLength: history.length },
+    }).catch(err => console.warn('[DB] logPrompt (ui-chat) failed:', err))
+    return json(res, { reply })
   }
 
   // Service credits status
