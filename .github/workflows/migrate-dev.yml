@@ -1,0 +1,43 @@
+name: Migrate Dev DB
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'supabase/migrations/**'
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to confirm running migrations against dev DB'
+        required: true
+        default: 'no'
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Confirm manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "yes" ]; then
+            echo "Confirmation not provided. Exiting."
+            exit 1
+          fi
+
+      - name: Apply migrations to dev
+        run: |
+          supabase db push \
+            --project-ref ${{ secrets.SUPABASE_PROJECT_REF }} \
+            --password ${{ secrets.SUPABASE_DB_PASSWORD }} \
+            --include-all
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
