@@ -77,15 +77,13 @@ export function NemotronChat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: [
-            ...messages.map((m) => ({ role: m.role, content: m.content })),
-            { role: 'user', content: text },
-          ],
+          message: text,
+          history: messages.map((m) => ({ role: m.role, content: m.content })),
         }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
-      const reply = data.content ?? data.message ?? data.response ?? 'No response'
+      const reply = data.reply ?? data.content ?? data.message ?? 'No response'
 
       setMessages((prev) => [
         ...prev,
@@ -165,8 +163,8 @@ export function NemotronChat() {
 
       {/* Error */}
       {error && (
-        <div className="px-4 pb-2">
-          <p className="text-xs text-brand-red">{error}</p>
+        <div className="mx-4 mb-2 px-3 py-2 rounded bg-brand-red/15 border border-brand-red/40">
+          <p className="text-xs text-brand-red font-medium">{error}</p>
         </div>
       )}
 

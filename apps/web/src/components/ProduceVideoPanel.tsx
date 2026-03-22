@@ -104,7 +104,7 @@ export function ProduceVideoPanel() {
         onDrop={onDrop}
         onClick={() => inputRef.current?.click()}
         className={`relative border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors mb-4
-          ${isDragging ? 'border-brand-red bg-brand-red/5' : 'border-border hover:border-border-input'}
+          ${isDragging ? 'border-brand-red bg-brand-red/5' : 'border-[#3A3A3A] hover:border-[#555555]'}
           ${state === 'uploading' ? 'opacity-60 pointer-events-none' : ''}`}
       >
         <input
