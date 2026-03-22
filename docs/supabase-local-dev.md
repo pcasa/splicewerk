@@ -11,6 +11,20 @@ supabase-dev     ←  cloud project, migrations applied on merge to develop
 supabase-prod    ←  future second cloud project, migrations applied on release to main
 ```
 
+## ⚠️ Critical: Local vs Remote Commands
+
+`supabase db push` with **no flags** pushes to the **remote (cloud) database**.
+Always be explicit about where you are pushing:
+
+| Command | Target |
+|---|---|
+| `supabase db push --local` | Local Docker stack only |
+| `supabase db push` | Remote cloud project (prompts for confirmation) |
+| `supabase db reset` | Local Docker stack only (safe) |
+| `supabase db reset --linked` | Remote cloud project (destructive — never on prod) |
+
+**Rule: on a feature branch, always use `--local`. Never run bare `supabase db push` on a feature branch.**
+
 ---
 
 ## One-Time Setup
@@ -46,6 +60,17 @@ supabase link --project-ref <SUPABASE_PROJECT_REF>
 
 ---
 
+## Local Stack Credentials
+
+The local CLI uses different labels than the cloud dashboard:
+
+| Local CLI label | Supabase equivalent | `.env` variable |
+|---|---|---|
+| **Publishable** | anon key | `SUPABASE_ANON_KEY` |
+| **Secret** | service role key | `SUPABASE_SERVICE_KEY` |
+
+---
+
 ## Daily Feature Branch Workflow
 
 ### Start local stack
@@ -58,18 +83,18 @@ Docker pulls the Supabase images on first run (may take a few minutes).
 Subsequent starts are fast. Outputs local credentials:
 
 ```
-API URL:      http://localhost:54321
-DB URL:       postgresql://postgres:postgres@localhost:54322/postgres
-Studio URL:   http://localhost:54323
-Anon key:     eyJ...
-Service key:  eyJ...
+API URL:      http://127.0.0.1:54321
+DB URL:       postgresql://postgres:postgres@127.0.0.1:54322/postgres
+Studio URL:   http://127.0.0.1:54323
+Publishable:  sb_publishable_...    ← this is the anon key
+Secret:       sb_secret_...         ← this is the service role key
 ```
 
 Add local credentials to `.env` for development (do not commit):
 ```
-SUPABASE_URL=http://localhost:54321
-SUPABASE_ANON_KEY=<local anon key from supabase start output>
-SUPABASE_SERVICE_KEY=<local service key from supabase start output>
+SUPABASE_URL=http://127.0.0.1:54321
+SUPABASE_ANON_KEY=sb_publishable_...
+SUPABASE_SERVICE_KEY=sb_secret_...
 ```
 
 ### Write a migration
@@ -85,10 +110,10 @@ Edit the generated SQL file with your schema changes.
 ### Apply migrations to local DB
 
 ```bash
-supabase db push
+supabase db push --local
 ```
 
-Or reset the local DB and replay all migrations from scratch:
+Reset the local DB and replay all migrations from scratch:
 ```bash
 supabase db reset
 ```
@@ -99,7 +124,7 @@ in seconds. No data is lost on the cloud project.
 ### View local Studio (Supabase dashboard for local DB)
 
 ```
-http://localhost:54323
+http://127.0.0.1:54323
 ```
 
 Full table editor, SQL editor, storage browser — same UI as the cloud dashboard.
@@ -111,7 +136,7 @@ supabase stop
 ```
 
 Data persists between stop/start. Use `supabase stop --no-backup` to stop and
-wipe all local data (useful for a truly clean reset without `db reset`).
+wipe all local data.
 
 ---
 
@@ -122,8 +147,8 @@ wipe all local data (useful for a truly clean reset without `db reset`).
 1. `supabase start` — start local stack
 2. `supabase migration new <name>` — create migration file
 3. Write SQL in the generated file
-4. `supabase db push` — apply to local DB
-5. Test against local stack
+4. `supabase db push --local` — apply to local DB only ⚠️ always use `--local` here
+5. Test against local stack via Studio at http://127.0.0.1:54323
 6. If something is wrong: `supabase db reset` — wipe and replay from scratch
 7. Commit the migration file with the feature branch
 
@@ -132,10 +157,10 @@ wipe all local data (useful for a truly clean reset without `db reset`).
 After PR is merged to `develop`, apply the migration to the cloud dev project:
 
 ```bash
-supabase db push --linked
+supabase db push
+# Will prompt: "Do you want to push these migrations to the remote database?"
+# Type Y only when on develop and intentionally targeting the cloud project
 ```
-
-This pushes any unapplied migrations to the linked cloud project (`supabase link`).
 
 ### On release to main (production)
 
@@ -145,7 +170,8 @@ This pushes any unapplied migrations to the linked cloud project (`supabase link
    ```
 2. Push migrations:
    ```bash
-   supabase db push --linked
+   supabase db push
+   # Confirm Y when prompted
    ```
 3. Re-link to dev project:
    ```bash
@@ -163,6 +189,7 @@ supabase/migrations/
   20260322120000_initial_schema.sql       ← runs, brand_configs
   20260322120001_assets_clips.sql         ← assets, clips, tags, clip_tags, run_clips
   20260322120002_cost_ledger.sql          ← cost_ledger, run_costs view
+  20260322120003_prompt_logs.sql          ← prompt_logs
 ```
 
 Never edit a migration that has already been applied to the cloud dev or prod
@@ -174,9 +201,9 @@ project. Write a new migration to amend it.
 
 | Variable | Local | Cloud Dev | Cloud Prod |
 |---|---|---|---|
-| `SUPABASE_URL` | `http://localhost:54321` | from dashboard | from dashboard |
-| `SUPABASE_ANON_KEY` | from `supabase start` output | from dashboard | from dashboard |
-| `SUPABASE_SERVICE_KEY` | from `supabase start` output | from dashboard | from dashboard |
+| `SUPABASE_URL` | `http://127.0.0.1:54321` | from dashboard | from dashboard |
+| `SUPABASE_ANON_KEY` | Publishable key from `supabase start` | from dashboard | from dashboard |
+| `SUPABASE_SERVICE_KEY` | Secret key from `supabase start` | from dashboard | from dashboard |
 | `SUPABASE_PROJECT_REF` | n/a | from dashboard URL | from dashboard URL |
 
 All values go in `.env` (gitignored). Never commit keys.
@@ -193,14 +220,18 @@ open -a Docker   # macOS — start Docker Desktop
 **Port conflict (54321 already in use):**
 Edit `supabase/config.toml` to change the port, or stop whatever is using 54321.
 
+**Accidentally ran `supabase db push` on a feature branch and pushed to remote:**
+Do not panic. Write a down migration to reverse the changes and push that to remote,
+then continue on local only with `--local`.
+
 **Migration out of sync with cloud:**
 ```bash
-supabase db push --linked --dry-run   # preview what would be applied
-supabase db push --linked             # apply
+supabase db push --dry-run   # preview what would be applied to remote
+supabase db push             # apply to remote (confirm when prompted)
 ```
 
 **Reset cloud dev DB (nuclear option — destroys all data):**
 ```bash
 supabase db reset --linked
 ```
-Only use this on the dev project, never prod.
+Only ever use this on the dev project, never prod.
