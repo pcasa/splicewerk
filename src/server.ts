@@ -46,12 +46,7 @@ async function sendInngestEvent(name: string, data: unknown): Promise<string> {
   return result.ids?.[0] ?? 'unknown'
 }
 
-const NEMOTRON_SYSTEM = `You are a video production pipeline architect advising the Splicewerk team.
-Stack: NVIDIA NIM (Nemotron) for AI prompts and advice, Runway Gen-4 Turbo for cinematic video effects,
-Shotstack for cloud video assembly, sharp + ffmpeg for local processing, Inngest for pipeline orchestration.
-Current project: Autobahn Syndicate brand logo reveal — German automotive performance brand.
-Colors: #E02828 red, #F46E2C orange. Font: Montserrat.
-Be direct, specific, and actionable.`
+const NEMOTRON_SYSTEM = `Autobahn Syndicate's Video Production AI. User Inputs: Media (clips/images) + Plain Language Instructions. Output: Optimized EDL. Brand Guidelines: Colors #E02828 & #F46E2C, Montserrat Font. Prioritize Dynamic, High-Performance Aesthetic. Execute via Splicewerk Pipeline (ffmpeg, Runway Gen-4, Shotstack).`
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
