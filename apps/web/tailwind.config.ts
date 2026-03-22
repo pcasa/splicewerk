@@ -10,27 +10,27 @@ const config: Config = {
     extend: {
       colors: {
         background: '#0A0A0A',
-        card: '#111111',
-        input: '#0D0D0D',
+        card: '#161616',
+        input: '#111111',
         border: {
-          DEFAULT: '#222222',
-          input: '#333333',
+          DEFAULT: '#2A2A2A',
+          input: '#3A3A3A',
         },
         brand: {
           red: '#E02828',
           orange: '#F46E2C',
         },
         text: {
-          primary: '#F7F6F5',
-          muted: '#888888',
-          subtle: '#444444',
+          primary: '#F4F4F5',
+          muted: '#A1A1AA',
+          subtle: '#71717A',
         },
       },
       fontFamily: {
         sans: ['var(--font-montserrat)', 'Montserrat', 'sans-serif'],
       },
       borderColor: {
-        DEFAULT: '#222222',
+        DEFAULT: '#2A2A2A',
       },
     },
   },
