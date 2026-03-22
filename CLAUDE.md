@@ -163,7 +163,7 @@ Supabase Pro project already created. Not yet initialized.
 See `docs/supabase-local-dev.md` for full CLI workflow.
 
 **Planned tables:** `runs`, `brand_configs`, `assets`, `clips`, `tags`,
-`clip_tags`, `run_clips`, `cost_ledger` + `run_costs` view.
+`clip_tags`, `run_clips`, `cost_ledger` + `run_costs` view, `prompt_logs`.
 
 **Planned storage buckets:** `brand-assets` (public), `generated-outputs` (public),
 `mobile-uploads` (private).
@@ -204,6 +204,10 @@ Only `brand.json` config files are committed from `projects/`.
 - **Publishing** — YouTube standard + Shorts (primary), Instagram Reels + TikTok (via cross-post)
 - **Cost tracking** — `cost_ledger` table, per-run cost visibility, retry inflation detection
 - **Mobile app** — React Native (Expo) in `apps/mobile/` for car events
+- **Prompt observability** — `prompt_logs` table captures every NIM/Nemotron call
+  (pipeline + UI chat) with `source`, `metadata`, latency, tokens. Dashboard viewer
+  for comparing prompt strategies. Log in `callLLM()` + `/api/nemotron` handler.
+  Helper: `packages/db/src/prompts.ts → logPrompt()`
 - **Auth** — Supabase Auth, coming after Phase 5 storage/DB work
 
 Full details in `~/.claude/projects/.../memory/` files.
