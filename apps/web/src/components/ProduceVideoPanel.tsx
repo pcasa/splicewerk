@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState, useEffect } from 'react'
 
 type UploadState = 'idle' | 'uploading' | 'ready' | 'producing' | 'done' | 'error'
 
@@ -14,12 +14,20 @@ export function ProduceVideoPanel() {
   const [error, setError] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const sessionDirRef = useRef<string | null>(null)
+
+  // Keep ref in sync so uploadFiles always sees the latest value
+  useEffect(() => { sessionDirRef.current = sessionDir }, [sessionDir])
 
   const uploadFiles = useCallback(async (newFiles: File[]) => {
     if (newFiles.length === 0) return
     setState('uploading')
     setError(null)
     const form = new FormData()
+    // existingSessionDir MUST come before files so busboy sees it before any file events
+    // Use ref to avoid stale closure when files are added quickly
+    const currentSessionDir = sessionDirRef.current
+    if (currentSessionDir) form.append('existingSessionDir', currentSessionDir)
     for (const f of newFiles) form.append('file', f)
     try {
       const res = await fetch('/api/upload', { method: 'POST', body: form })

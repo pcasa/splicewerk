@@ -2,7 +2,7 @@ import { supabase } from './client.js'
 
 export type PromptLogEntry = {
   run_id?: string
-  source: 'ui-chat' | 'pipeline' | 'pipeline-baseline'
+  source: 'ui-chat' | 'pipeline' | 'pipeline-baseline' | 'generate-edl'
   step?: string
   model: string
   messages_in: Array<{ role: string; content: string | unknown[] }>

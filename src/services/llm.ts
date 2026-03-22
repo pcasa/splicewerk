@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import type { EDL, AssetManifest } from '../edl/types.js'
+import { logPrompt } from '@splicewerk/db'
 
 // ─── Types ───
 
@@ -216,7 +217,8 @@ export async function callLLM(
 export async function generateEDL(
   prompt: string,
   assetManifest: AssetManifest,
-  channelConfig?: ChannelConfig
+  channelConfig?: ChannelConfig,
+  runId?: string
 ): Promise<Result<EDL>> {
   // Build asset list for system prompt
   const assetList = assetManifest.files
@@ -250,7 +252,15 @@ ${EDL_SCHEMA_DESCRIPTION}
 Available Assets:
 ${assetList}
 ${brandingSection}
-IMPORTANT: Output ONLY valid JSON matching the EDL schema above. Do not include any markdown code fences, explanations, or additional text. The response must be parseable by JSON.parse() directly.`
+CRITICAL RULES:
+1. Every timeline segment MUST have a "processor" field. Use:
+   - "ffmpeg" for video clips, video trimming, stabilization, or color grading
+   - "runway" for images (image-to-video), text title cards, or AI-generated scenes
+   - "elevenlabs" for audio/SFX generation only
+2. Use EXACT filenames from the Available Assets list above. Do NOT invent or guess filenames.
+3. For Runway image segments, "durationSeconds" must be 5 or 10 (round to nearest).
+4. For ffmpeg video segments with "operation": "stabilize", include "processor": "ffmpeg".
+5. Output ONLY valid JSON. No markdown fences, no explanations. Must be parseable by JSON.parse() directly.`
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -269,8 +279,13 @@ IMPORTANT: Output ONLY valid JSON matching the EDL schema above. Do not include 
   }
 
   if (!result.ok) {
+    void logPrompt({ source: 'generate-edl', model: DEFAULT_MODEL, messages_in: messages, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
+      .catch(() => {})
     return { ok: false, error: `LLM call failed: ${result.error}` }
   }
+
+  void logPrompt({ source: 'generate-edl', model: DEFAULT_MODEL, messages_in: messages, response_out: result.value, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
+    .catch(() => {})
 
   // Strip markdown fences if present
   let raw = result.value.trim()

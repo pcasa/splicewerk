@@ -368,6 +368,38 @@ export async function addTextOverlay(
   return runFFmpeg(args);
 }
 
+/**
+ * Generate a title card: white text centered on a black background.
+ * Uses ffmpeg lavfi color source + drawtext — zero API credits.
+ */
+/**
+ * Generate a title card: solid black clip of the given duration.
+ * Note: drawtext requires ffmpeg built with --enable-libfreetype.
+ * Until that's available, this generates a plain black placeholder.
+ */
+export async function generateTitleCard(
+  text: string,
+  durationSec: number,
+  output: string,
+  width = 1920,
+  height = 1080
+): Promise<Result<string>> {
+  log('info', 'generateTitleCard', { text, durationSec, output })
+
+  const args = [
+    '-y',
+    '-f', 'lavfi',
+    '-i', `color=c=black:s=${width}x${height}:r=30:d=${durationSec}`,
+    '-c:v', 'h264_videotoolbox',
+    '-allow_sw', '1',
+    '-pix_fmt', 'yuv420p',
+    '-t', String(durationSec),
+    output,
+  ]
+
+  return runFFmpeg(args)
+}
+
 export async function mixAudio(
   videoInput: string,
   audioInput: string,

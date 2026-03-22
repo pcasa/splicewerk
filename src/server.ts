@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import * as fs from 'node:fs/promises'
-import { createWriteStream } from 'node:fs'
+import { createWriteStream, mkdirSync } from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -245,16 +245,22 @@ const server = createServer(async (req, res) => {
 
   // Upload assets for video production
   if (url === '/api/upload' && req.method === 'POST') {
-    const timestamp = Date.now()
-    const sessionDir = `projects/uploads-${timestamp}`
-    const rawDir = `${sessionDir}/raw`
-    await fs.mkdir(rawDir, { recursive: true })
-
+    let sessionDir = ''
     const files: string[] = []
 
     await new Promise<void>((resolve, reject) => {
       const bb = busboy({ headers: req.headers })
+      bb.on('field', (name, value) => {
+        if (name === 'existingSessionDir' && value.startsWith('projects/uploads-')) {
+          sessionDir = value
+        }
+      })
       bb.on('file', (_field, stream, info) => {
+        // sessionDir may still be empty here if field arrives after file;
+        // busboy emits fields before files in practice, but we set rawDir lazily
+        if (!sessionDir) sessionDir = `projects/uploads-${Date.now()}`
+        const rawDir = `${sessionDir}/raw`
+        mkdirSync(rawDir, { recursive: true })
         const { filename } = info
         const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_')
         files.push(safeName)
@@ -268,6 +274,9 @@ const server = createServer(async (req, res) => {
       req.pipe(bb)
     })
 
+    if (!sessionDir) sessionDir = `projects/uploads-${Date.now()}`
+    const rawDir = `${sessionDir}/raw`
+    await fs.mkdir(rawDir, { recursive: true })
     return json(res, { sessionDir, rawDir, files })
   }
 

@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises'
 import { inngest } from '../client.js'
 import { catalogAssets } from '../../services/asset-catalog.js'
 import { generateEDL } from '../../services/llm.js'
-import { trimClip, loadFormatPresets } from '../../services/ffmpeg.js'
+import { trimClip, loadFormatPresets, generateTitleCard, imageToClip } from '../../services/ffmpeg.js'
 import { imageToVideo, textToVideo } from '../../services/runway.js'
 import { uploadFile, assembleClips } from '../../services/shotstack.js'
 import type { AssemblySegment, AssemblyOptions } from '../../services/shotstack.js'
@@ -39,10 +39,31 @@ function parseTrimTime(t: string): number {
 }
 
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
+const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'])
 
 function isImageSource(filePath: string): boolean {
   const ext = '.' + (filePath.split('.').pop()?.toLowerCase() ?? '')
   return IMAGE_EXTS.has(ext)
+}
+
+function isVideoSource(filePath: string): boolean {
+  const ext = '.' + (filePath.split('.').pop()?.toLowerCase() ?? '')
+  return VIDEO_EXTS.has(ext)
+}
+
+/** Map any duration to nearest Runway-supported value (5 or 10 seconds) */
+function clampRunwayDuration(seconds: number | undefined): 5 | 10 {
+  if (!seconds || seconds < 7.5) return 5
+  return 10
+}
+
+/** Infer missing processor from segment content */
+function inferProcessor(seg: TimelineSegment, sourcePath: string | null): string | undefined {
+  if (seg.processor) return seg.processor
+  if (!sourcePath) return 'runway'           // no source → generated (text-to-video)
+  if (isImageSource(sourcePath)) return 'runway'
+  if (isVideoSource(sourcePath)) return 'ffmpeg'
+  return undefined
 }
 
 // ─── Pipeline Handler (exported for testing) ───
@@ -70,7 +91,7 @@ export async function produceVideoPipeline(
 
   // Step 2: Generate EDL
   const edlResult = await step.run('generate-edl', async () => {
-    return generateEDL(prompt, manifest)
+    return generateEDL(prompt, manifest, undefined, runId)
   })
 
   // Step 3: Validate EDL
@@ -118,9 +139,29 @@ export async function produceVideoPipeline(
       const assetByFilename = new Map(
         manifest.files.map((f) => [f.filename.toLowerCase(), f.path])
       )
+      // Also build a map keyed by the numeric portion of the filename (e.g. "0295" → path)
+      // so LLM-hallucinated names like "0295.mp4" match actual files like "IMG_0295.MOV"
+      const assetByNumber = new Map<string, string>()
+      for (const f of manifest.files) {
+        const nums = f.filename.match(/\d+/)
+        if (nums) assetByNumber.set(nums[0]!, f.path)
+      }
       const resolveSource = (source: string): string => {
         if (source.startsWith('/')) return source
-        return assetByFilename.get(source.toLowerCase()) ?? source
+        // 1. Exact match
+        const exact = assetByFilename.get(source.toLowerCase())
+        if (exact) return exact
+        // 2. Strip extension and try again
+        const noExt = source.replace(/\.[^.]+$/, '').toLowerCase()
+        const noExtMatch = assetByFilename.get(noExt)
+        if (noExtMatch) return noExtMatch
+        // 3. Match by leading number sequence (e.g. "0295.mp4" → "0295" → IMG_0295.MOV)
+        const nums = source.match(/\d+/)
+        if (nums) {
+          const numMatch = assetByNumber.get(nums[0]!)
+          if (numMatch) return numMatch
+        }
+        return source
       }
 
       for (let i = 0; i < edl.timeline.length; i++) {
@@ -128,26 +169,33 @@ export async function produceVideoPipeline(
         const outputPath = `${renderedDir}/seg${i + 1}.mp4`
 
         const sourcePath = seg.source ? resolveSource(seg.source) : null
-        const sourceIsImage = sourcePath ? isImageSource(sourcePath) : false
+        const processor = inferProcessor(seg, sourcePath)
 
-        if (seg.processor === 'runway' || sourceIsImage) {
-          // Runway: image → video or text → video
-          const duration = (seg.durationSeconds === 5 || seg.durationSeconds === 10)
-            ? seg.durationSeconds
-            : 5
-          const segPrompt = seg.prompt ?? `Cinematic motion for: ${seg.type}`
-
-          if (sourcePath) {
-            const result = await imageToVideo(sourcePath, segPrompt, duration)
-            if (!result.ok) throw new Error(`Runway imageToVideo failed for ${seg.id}: ${result.error}`)
-            results.push({ path: result.value, durationSeconds: duration })
+        if (processor === 'runway') {
+          // Runway: image → video only. Text/generated → ffmpeg title card (free).
+          if (sourcePath && isImageSource(sourcePath)) {
+            const duration = clampRunwayDuration(seg.durationSeconds)
+            const segPrompt = seg.prompt ?? `Cinematic motion for: ${seg.type}`
+            const runwayResult = await imageToVideo(sourcePath, segPrompt, duration)
+            if (runwayResult.ok) {
+              results.push({ path: runwayResult.value, durationSeconds: duration })
+            } else {
+              // Fallback: static image clip via ffmpeg (no Runway credits needed)
+              console.warn(`[produce-video] Runway failed for ${seg.id} (${runwayResult.error}) — falling back to static ffmpeg clip`)
+              const fallbackResult = await imageToClip(sourcePath, seg.durationSeconds ?? duration, outputPath)
+              if (!fallbackResult.ok) throw new Error(`ffmpeg imageToClip fallback failed for ${seg.id}: ${fallbackResult.error}`)
+              results.push({ path: outputPath, durationSeconds: seg.durationSeconds ?? duration })
+            }
           } else {
-            const result = await textToVideo(segPrompt, duration)
-            if (!result.ok) throw new Error(`Runway textToVideo failed for ${seg.id}: ${result.error}`)
-            results.push({ path: result.value, durationSeconds: duration })
+            // No image source — generate a title card with ffmpeg
+            const titleText = seg.textOverlay?.text ?? seg.prompt ?? seg.id
+            const duration = seg.durationSeconds ?? 5
+            const result = await generateTitleCard(titleText, duration, outputPath)
+            if (!result.ok) throw new Error(`Title card failed for ${seg.id}: ${result.error}`)
+            results.push({ path: outputPath, durationSeconds: duration })
           }
 
-        } else if (seg.processor === 'ffmpeg' && sourcePath) {
+        } else if (processor === 'ffmpeg' && sourcePath) {
           if (seg.trim) {
             const [startStr, endStr] = seg.trim.split('-')
             const startSec = parseTrimTime(startStr ?? '0')
@@ -156,11 +204,18 @@ export async function produceVideoPipeline(
             if (!result.ok) throw new Error(`Failed to trim segment ${seg.id}: ${result.error}`)
             results.push({ path: outputPath, durationSeconds: endSec - startSec })
           } else {
+            // No trim — use source directly, but verify file exists first
             const duration = seg.durationSeconds ?? 5
-            results.push({ path: sourcePath, durationSeconds: duration })
+            try {
+              await fs.access(sourcePath)
+              results.push({ path: sourcePath, durationSeconds: duration })
+            } catch {
+              console.warn(`[produce-video] Skipping segment ${seg.id}: file not found at "${sourcePath}"`)
+            }
           }
+        } else {
+          console.warn(`[produce-video] Skipping segment ${seg.id}: processor=${processor}, sourcePath=${sourcePath}`)
         }
-        // skip segments with no processor or unsupported processor (elevenlabs, etc.)
       }
 
       return results
