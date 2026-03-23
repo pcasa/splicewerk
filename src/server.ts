@@ -16,7 +16,7 @@ const handler = serve({ client: inngest, functions: [produceVideo, logoReveal] }
 const PORT      = Number(process.env.PORT ?? 3000)
 const INNGEST   = 'http://localhost:8288'
 const NIM_URL   = 'https://integrate.api.nvidia.com/v1'
-const NEMOTRON  = 'nvidia/llama-3.3-nemotron-super-49b-v1'
+const NEMOTRON  = 'nvidia/nemotron-3-nano-30b-a3b'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DASHBOARD = path.join(__dirname, 'ui', 'dashboard.html')
 
@@ -136,7 +136,7 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // Nemotron chat
+  // Nemotron chat — SSE streaming
   if (url === '/api/nemotron' && req.method === 'POST') {
     const body  = await readBody(req) as Record<string, unknown>
     const message = String(body.message ?? '')
@@ -151,16 +151,81 @@ const server = createServer(async (req, res) => {
       { role: 'user' as const, content: message },
     ]
 
-    const result = await callLLM(messages, { model: NEMOTRON, temperature: 0.4, maxTokens: 800 }, NIM_URL, `Bearer ${apiKey}`)
-    const reply = result.ok ? result.value : `Error: ${result.error}`
-    void logPrompt({
-      source: 'ui-chat',
-      model: NEMOTRON,
-      messages_in: messages,
-      response_out: result.ok ? result.value : undefined,
-      metadata: { historyLength: history.length },
-    }).catch(err => console.warn('[DB] logPrompt (ui-chat) failed:', err))
-    return json(res, { reply })
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Expose-Headers': 'Content-Type',
+    })
+
+    const sendEvent = (event: string, data: string) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+
+    try {
+      const nimRes = await fetch(`${NIM_URL}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({ model: NEMOTRON, messages, stream: true, temperature: 0.4, max_tokens: 800 }),
+      })
+
+      if (!nimRes.ok || !nimRes.body) {
+        sendEvent('error', `NIM error: HTTP ${nimRes.status}`)
+        res.end()
+        return
+      }
+
+      const reader = nimRes.body.getReader()
+      req.on('close', () => { void reader.cancel() })
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let fullContent = ''
+      let fullThinking = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const data = trimmed.slice(5).trim()
+          if (data === '[DONE]') continue
+          try {
+            const chunk = JSON.parse(data)
+            const delta = chunk.choices?.[0]?.delta
+            if (!delta) continue
+            if (delta.reasoning_content) {
+              fullThinking += delta.reasoning_content
+              sendEvent('thinking', delta.reasoning_content)
+            }
+            if (delta.content) {
+              fullContent += delta.content
+              sendEvent('token', delta.content)
+            }
+          } catch { /* skip malformed chunks */ }
+        }
+      }
+
+      sendEvent('done', '')
+      void logPrompt({
+        source: 'ui-chat',
+        model: NEMOTRON,
+        messages_in: messages,
+        response_out: fullContent || fullThinking,
+        metadata: { historyLength: history.length },
+      }).catch(err => console.warn('[DB] logPrompt (ui-chat) failed:', err))
+    } catch (err) {
+      sendEvent('error', err instanceof Error ? err.message : String(err))
+    }
+
+    res.end()
+    return
   }
 
   // Service credits status

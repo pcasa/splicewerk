@@ -1,0 +1,12 @@
+{
+  "model": "meta/llama-3.3-70b-instruct",
+  "messages": [
+    {
+      "role": "user",
+      "content": "We are building a video editing pipeline for youtube and other social media outlets. Our goal is to help expedite the video editing by using agentic UIs to help with the process. As an architect and professional engineer, please review the code found at https://github.com/pcasa/splicewerk/tree/feat/CC-P5-02-supabase-pipeline and provide feedback and recommendations."
+    }
+  ],
+  "temperature": 0.4,
+  "max_tokens": 16384,
+  "stream": true
+}

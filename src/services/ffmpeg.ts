@@ -1,11 +1,14 @@
 import { execFile } from "child_process";
 import { existsSync } from "fs";
 import { promisify } from "util";
-import { readFileSync, writeFileSync, unlinkSync } from "fs";
+import { readFileSync, unlinkSync } from "fs";
+import { unlink, writeFile } from "node:fs/promises";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { tmpdir } from "os";
+import { randomUUID } from "node:crypto";
 import YAML from "yaml";
+import sharp from "sharp";
 import type { FormatPreset } from "../edl/types.js";
 
 const execFileAsync = promisify(execFile);
@@ -137,12 +140,26 @@ function log(level: "info" | "debug", message: string, data?: Record<string, unk
   }
 }
 
+// ─── Encoder Selection ───
+
+export function chooseEncoder(preferH264OnMac = true, preferHevc = false): string {
+  if (process.platform === "darwin" && preferH264OnMac && !preferHevc) {
+    return "h264_videotoolbox";
+  }
+  if (preferHevc) return "libx265";
+  return "libx264";
+}
+
 // ─── FFmpeg Runner ───
+
+const FFMPEG_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
 async function runFFmpeg(args: string[]): Promise<Result<string>> {
   log("info", "Running ffmpeg", { args });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FFMPEG_TIMEOUT_MS);
   try {
-    const { stdout, stderr } = await execFileAsync(FFMPEG_BIN, args);
+    const { stdout, stderr } = await execFileAsync(FFMPEG_BIN, args, { signal: controller.signal as AbortSignal });
     log("debug", "ffmpeg stdout", { stdout });
     log("debug", "ffmpeg stderr", { stderr });
     return { ok: true, value: stdout };
@@ -151,6 +168,8 @@ async function runFFmpeg(args: string[]): Promise<Result<string>> {
     const message = error.stderr ?? error.message ?? "Unknown ffmpeg error";
     log("info", "ffmpeg failed", { error: message });
     return { ok: false, error: message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -178,7 +197,7 @@ export async function imageToClip(
     "-i", input,
     "-t", String(durationSec),
     "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
-    "-c:v", "h264_videotoolbox",
+    "-c:v", chooseEncoder(),
     "-allow_sw", "1",
     "-pix_fmt", "yuv420p",
     "-r", "30",
@@ -192,22 +211,50 @@ export async function trimClip(
   input: string,
   startSec: number,
   endSec: number,
-  output: string
+  output: string,
+  opts?: { forceAccurate?: boolean }
 ): Promise<Result<string>> {
-  log("info", "trimClip", { input, startSec, endSec, output });
+  log("info", "trimClip", { input, startSec, endSec, output, opts });
 
+  const encoder = chooseEncoder();
   const args = [
     "-y",
-    "-ss", String(startSec),
+    "-ss", String(startSec),  // fast-seek before -i (best perf for large files)
     "-to", String(endSec),
     "-i", input,
-    "-c:v", "h264_videotoolbox",
+    "-c:v", encoder,
     "-allow_sw", "1",
     "-c:a", "aac",
     output,
   ];
 
-  return runFFmpeg(args);
+  const firstRes = await runFFmpeg(args);
+  if (!firstRes.ok || !opts?.forceAccurate) return firstRes;
+
+  // Accurate re-encode: use a temp file to avoid overwriting input mid-encode
+  const tmpOutput = output + ".accurate.mp4";
+  const reArgs = [
+    "-y",
+    "-i", output,
+    "-ss", String(startSec),  // after -i for frame-accurate cut
+    "-to", String(endSec - startSec),
+    "-c:v", encoder,
+    "-allow_sw", "1",
+    "-c:a", "aac",
+    tmpOutput,
+  ];
+  const reRes = await runFFmpeg(reArgs);
+  if (!reRes.ok) return reRes;
+
+  // Replace output with accurate version
+  try {
+    await unlink(output);
+    const { rename } = await import("node:fs/promises");
+    await rename(tmpOutput, output);
+  } catch (err) {
+    return { ok: false, error: `trimClip rename failed: ${String(err)}` };
+  }
+  return { ok: true, value: reRes.value };
 }
 
 export async function concatClips(
@@ -220,14 +267,14 @@ export async function concatClips(
   const concatFile = join(tmpdir(), `splicewerk-concat-${Date.now()}.txt`);
   const lines = inputs.map((f) => `file '${resolve(f)}'`).join("\n");
   log("info", "concatClips file list", { concatFile, lines });
-  writeFileSync(concatFile, lines, "utf-8");
+  await writeFile(concatFile, lines, "utf-8");
 
   const args = [
     "-y",
     "-f", "concat",
     "-safe", "0",
     "-i", concatFile,
-    "-c:v", "h264_videotoolbox",
+    "-c:v", chooseEncoder(),
     "-allow_sw", "1",
     "-c:a", "aac",
     output,
@@ -282,7 +329,7 @@ export async function splitScreen(
     "-filter_complex", filterComplex,
     "-map", "[v]",
     "-map", "0:a?",
-    "-c:v", "h264_videotoolbox",
+    "-c:v", chooseEncoder(),
     "-c:a", "aac",
     output,
   ];
@@ -312,7 +359,7 @@ export async function crossfade(
     "-filter_complex", filterComplex,
     "-map", "[v]",
     "-map", "[a]",
-    "-c:v", "h264_videotoolbox",
+    "-c:v", chooseEncoder(),
     "-c:a", "aac",
     output,
   ];
@@ -360,7 +407,7 @@ export async function addTextOverlay(
     "-y",
     "-i", input,
     "-vf", filterComplex,
-    "-c:v", "h264_videotoolbox",
+    "-c:v", chooseEncoder(),
     "-c:a", "aac",
     output,
   ];
@@ -369,35 +416,105 @@ export async function addTextOverlay(
 }
 
 /**
- * Generate a title card: white text centered on a black background.
- * Uses ffmpeg lavfi color source + drawtext — zero API credits.
+ * Renders text into a transparent PNG via SVG + Sharp.
+ * No libfreetype or system font paths required.
  */
+async function makeTextOverlay(
+  text: string,
+  width: number,
+  height: number,
+  fontSize = 80,
+  fill = "#fff"
+): Promise<string> {
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+    <text
+      x="${width / 2}" y="${height / 2}"
+      dominant-baseline="middle" text-anchor="middle"
+      font-family="Arial, Helvetica, sans-serif"
+      font-size="${fontSize}"
+      fill="${fill}"
+      letter-spacing="4"
+    >${escaped}</text>
+  </svg>`;
+  const overlayPath = join(tmpdir(), `text-overlay-${randomUUID()}.png`);
+  await sharp(Buffer.from(svg)).png().toFile(overlayPath);
+  return overlayPath;
+}
+
 /**
- * Generate a title card: solid black clip of the given duration.
- * Note: drawtext requires ffmpeg built with --enable-libfreetype.
- * Until that's available, this generates a plain black placeholder.
+ * Generate a title card: text rendered via SVG/Sharp overlaid on a solid background.
+ * No drawtext or libfreetype required.
  */
 export async function generateTitleCard(
   text: string,
   durationSec: number,
   output: string,
   width = 1920,
-  height = 1080
+  height = 1080,
+  opts?: { fontSize?: number; color?: string; bgColor?: string }
 ): Promise<Result<string>> {
-  log('info', 'generateTitleCard', { text, durationSec, output })
+  log("info", "generateTitleCard", { text, durationSec, output });
+
+  const overlayPath = await makeTextOverlay(text, width, height, opts?.fontSize ?? 80, opts?.color ?? "#fff");
+  const encoder = chooseEncoder();
 
   const args = [
-    '-y',
-    '-f', 'lavfi',
-    '-i', `color=c=black:s=${width}x${height}:r=30:d=${durationSec}`,
-    '-c:v', 'h264_videotoolbox',
-    '-allow_sw', '1',
-    '-pix_fmt', 'yuv420p',
-    '-t', String(durationSec),
+    "-y",
+    "-f", "lavfi",
+    "-i", `color=c=${opts?.bgColor ?? "black"}:s=${width}x${height}:r=30:d=${durationSec}`,
+    "-i", overlayPath,
+    "-filter_complex", "[0:v][1:v]overlay=0:0",
+    "-c:v", encoder,
+    "-allow_sw", "1",
+    "-pix_fmt", "yuv420p",
+    "-t", String(durationSec),
     output,
-  ]
+  ];
 
-  return runFFmpeg(args)
+  const result = await runFFmpeg(args);
+  try { await unlink(overlayPath); } catch { /* ignore */ }
+  return result;
+}
+
+/**
+ * Stabilize a shaky video clip using the vidstab filter (two-pass).
+ * Requires ffmpeg built with --enable-libvidstab.
+ */
+export async function stabilizeClip(
+  input: string,
+  output: string,
+  opts?: { smoothing?: number; shakiness?: number }
+): Promise<Result<string>> {
+  log("info", "stabilizeClip", { input, output, opts });
+
+  const trfPath = output + ".vidstab.trf";
+
+  // Pass 1 — motion detection
+  const detectArgs = [
+    "-y",
+    "-i", input,
+    "-vf", `vidstabdetect=result=${trfPath}:shakiness=${opts?.shakiness ?? 5}:accuracy=15`,
+    "-f", "null", "-",
+  ];
+  const detectRes = await runFFmpeg(detectArgs);
+  if (!detectRes.ok) return detectRes;
+
+  // Pass 2 — stabilization transform
+  const encoder = chooseEncoder();
+  const transformArgs = [
+    "-y",
+    "-i", input,
+    "-vf", `vidstabtransform=input=${trfPath}:smoothing=${opts?.smoothing ?? 5}:zoom=0:optzoom=2`,
+    "-c:v", encoder,
+    "-allow_sw", "1",
+    "-pix_fmt", "yuv420p",
+    output,
+  ];
+  const transformRes = await runFFmpeg(transformArgs);
+
+  try { await unlink(trfPath); } catch { /* ignore */ }
+  return transformRes;
 }
 
 export async function mixAudio(
@@ -466,7 +583,7 @@ export async function reformat(
     "-y",
     "-i", input,
     "-vf", vfParts.join(","),
-    "-c:v", "h264_videotoolbox",
+    "-c:v", chooseEncoder(),
     "-c:a", "aac",
     "-b:a", preset.audioBitrate,
     "-pix_fmt", preset.pixelFormat,
