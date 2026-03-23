@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises'
 import { inngest } from '../client.js'
 import { catalogAssets } from '../../services/asset-catalog.js'
 import { generateEDL } from '../../services/llm.js'
-import { trimClip, loadFormatPresets, generateTitleCard, imageToClip } from '../../services/ffmpeg.js'
+import { trimClip, loadFormatPresets, generateTitleCard, imageToClip, stabilizeClip } from '../../services/ffmpeg.js'
 import { imageToVideo, textToVideo } from '../../services/runway.js'
 import { uploadFile, assembleClips } from '../../services/shotstack.js'
 import type { AssemblySegment, AssemblyOptions } from '../../services/shotstack.js'
@@ -196,7 +196,11 @@ export async function produceVideoPipeline(
           }
 
         } else if (processor === 'ffmpeg' && sourcePath) {
-          if (seg.trim) {
+          if (seg.operation === 'stabilize') {
+            const result = await stabilizeClip(sourcePath, outputPath, { smoothing: 5 })
+            if (!result.ok) throw new Error(`Stabilize failed for ${seg.id}: ${result.error}`)
+            results.push({ path: outputPath, durationSeconds: seg.durationSeconds ?? 5 })
+          } else if (seg.trim) {
             const [startStr, endStr] = seg.trim.split('-')
             const startSec = parseTrimTime(startStr ?? '0')
             const endSec = parseTrimTime(endStr ?? '0')

@@ -2,7 +2,7 @@ import { execFile } from "child_process";
 import { existsSync } from "fs";
 import { promisify } from "util";
 import { readFileSync, unlinkSync } from "fs";
-import { unlink, writeFile } from "node:fs/promises";
+import { unlink, writeFile, mkdir, rm } from "node:fs/promises";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { tmpdir } from "os";
@@ -425,7 +425,10 @@ async function makeTextOverlay(
   height: number,
   fontSize = 80,
   fill = "#fff"
-): Promise<string> {
+): Promise<{ overlayPath: string; requestDir: string }> {
+  const requestDir = join(tmpdir(), `splicewerk-${randomUUID()}`);
+  await mkdir(requestDir, { recursive: true });
+  const overlayPath = join(requestDir, "overlay.png");
   const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
     <text
@@ -437,9 +440,8 @@ async function makeTextOverlay(
       letter-spacing="4"
     >${escaped}</text>
   </svg>`;
-  const overlayPath = join(tmpdir(), `text-overlay-${randomUUID()}.png`);
   await sharp(Buffer.from(svg)).png().toFile(overlayPath);
-  return overlayPath;
+  return { overlayPath, requestDir };
 }
 
 /**
@@ -456,7 +458,7 @@ export async function generateTitleCard(
 ): Promise<Result<string>> {
   log("info", "generateTitleCard", { text, durationSec, output });
 
-  const overlayPath = await makeTextOverlay(text, width, height, opts?.fontSize ?? 80, opts?.color ?? "#fff");
+  const { overlayPath, requestDir } = await makeTextOverlay(text, width, height, opts?.fontSize ?? 80, opts?.color ?? "#fff");
   const encoder = chooseEncoder();
 
   const args = [
@@ -472,9 +474,11 @@ export async function generateTitleCard(
     output,
   ];
 
-  const result = await runFFmpeg(args);
-  try { await unlink(overlayPath); } catch { /* ignore */ }
-  return result;
+  try {
+    return await runFFmpeg(args);
+  } finally {
+    await rm(requestDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 /**

@@ -177,7 +177,7 @@ const server = createServer(async (req, res) => {
       }
 
       const reader = nimRes.body.getReader()
-      req.on('close', () => { void reader.cancel() })
+      req.on('close', () => void reader.cancel().catch(() => {}))
       const decoder = new TextDecoder()
       let buffer = ''
       let fullContent = ''
