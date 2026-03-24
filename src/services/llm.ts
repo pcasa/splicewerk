@@ -42,6 +42,7 @@ const NEMOTRON_TEXT_MODEL   = 'nvidia/nemotron-3-nano-30b-a3b'
 const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://localhost:11434'
 const OLLAMA_BASE_URL = `${OLLAMA_HOST}/v1`
 const FALLBACK_MODEL = process.env.OLLAMA_FALLBACK_MODEL ?? 'nemotron-3-nano:4b'
+const LLM_MAX_RETRIES = Number(process.env.LLM_MAX_RETRIES ?? 3)
 const RETRY_DELAYS_MS = [500, 1000, 2000]
 const LLM_TIMEOUT_MS = 30 * 60 * 1000 // 30 minutes
 
@@ -136,7 +137,7 @@ export async function callLLM(
     model = DEFAULT_MODEL,
     temperature = 0.7,
     maxTokens = 4096,
-    retries = 3,
+    retries = LLM_MAX_RETRIES,
   } = options
 
   const maxAttempts = retries
