@@ -170,8 +170,12 @@ export const logoReveal = inngest.createFunction(
     }
 
     // ── Step 5: Runway Gen-4 visual FX (~60s, costs credits) ──────────────────
-    await step.run('runway-generate-video', async () => {
-      if (runwayIsCached) return { cached: true }
+    // Split into: create task → durable sleep+poll loop (no blocking setTimeout).
+    // Each step.sleep() is a serverless-safe checkpoint — the function suspends
+    // between polls instead of holding an execution slot for up to 5 minutes.
+    const RUNWAY_MAX_POLLS = 60  // 60 × 5s = 5 min ceiling
+    const runwayTaskId = await step.run('runway-create-task', async (): Promise<string | null> => {
+      if (runwayIsCached) return null
 
       const apiKey = process.env.RUNWAY_API_KEY
       if (!apiKey) throw new Error('RUNWAY_API_KEY not set')
@@ -187,19 +191,31 @@ export const logoReveal = inngest.createFunction(
         duration: 10,
         ratio: '1280:720',
       })
-
-      for (let i = 1; i <= 60; i++) {
-        await new Promise(r => setTimeout(r, 5000))
-        const status = await client.tasks.retrieve(task.id)
-        if (status.status === 'SUCCEEDED') {
-          const res = await fetch(status.output[0])
-          await fs.writeFile(PATHS.runwayVideo, Buffer.from(await res.arrayBuffer()))
-          return { taskId: task.id, cached: false }
-        }
-        if (status.status === 'FAILED') throw new Error(`Runway failed: ${status.failure}`)
-      }
-      throw new Error('Runway timed out after 5 minutes')
+      return task.id
     })
+
+    if (runwayTaskId !== null) {
+      let runwayDone = false
+      for (let poll = 1; poll <= RUNWAY_MAX_POLLS; poll++) {
+        await step.sleep(`runway-poll-wait-${poll}`, '5s')
+
+        const done = await step.run(`runway-poll-check-${poll}`, async (): Promise<boolean> => {
+          const apiKey = process.env.RUNWAY_API_KEY!
+          const client = new RunwayML({ apiKey })
+          const status = await client.tasks.retrieve(runwayTaskId)
+          if (status.status === 'SUCCEEDED') {
+            const res = await fetch(status.output[0])
+            await fs.writeFile(PATHS.runwayVideo, Buffer.from(await res.arrayBuffer()))
+            return true
+          }
+          if (status.status === 'FAILED') throw new Error(`Runway failed: ${status.failure}`)
+          return false
+        })
+
+        if (done) { runwayDone = true; break }
+      }
+      if (!runwayDone) throw new Error('Runway timed out after 5 minutes')
+    }
 
     if (!runwayIsCached) {
       void logCost({ run_id: runId, service: 'runway', operation: 'image-to-video-gen4-turbo-10s', units: 125, unit_type: 'credits', cost_usd: 1.25 })
@@ -243,13 +259,13 @@ export const logoReveal = inngest.createFunction(
       const tracks = [
         {
           clips: [{
-            asset: { type: 'video', src: videoUrl },
+            asset: { type: 'video' as const, src: videoUrl },
             start: 0, length: 10, fit: 'cover',
             transition: { out: 'fade' },
           }],
         },
         ...(audioUrl ? [{
-          clips: [{ asset: { type: 'audio', src: audioUrl }, start: 0, length: 10 }],
+          clips: [{ asset: { type: 'audio' as const, src: audioUrl }, start: 0, length: 10 }],
         }] : []),
       ]
 
