@@ -14,6 +14,8 @@ import {
   mixAudio,
   loadFormatPresets,
   getFormatPreset,
+  generateTitleCard,
+  stabilizeClip,
 } from "./ffmpeg.js";
 
 // Grab a typed reference to the mock
@@ -243,5 +245,74 @@ describe("getFormatPreset", () => {
   it("returns undefined for unknown format", () => {
     const preset = getFormatPreset("nonexistent");
     expect(preset).toBeUndefined();
+  });
+});
+
+describe("generateTitleCard — concurrent requests", () => {
+  // Mock sharp so it doesn't touch the filesystem
+  vi.mock("sharp", () => {
+    const chain = {
+      png: () => chain,
+      toFile: vi.fn().mockResolvedValue(undefined),
+    };
+    return { default: vi.fn(() => chain) };
+  });
+
+  // Mock fs/promises mkdir and rm so no real dirs are created
+  vi.mock("node:fs/promises", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:fs/promises")>();
+    return {
+      ...actual,
+      mkdir: vi.fn().mockResolvedValue(undefined),
+      rm: vi.fn().mockResolvedValue(undefined),
+    };
+  });
+
+  it("two simultaneous calls produce unique output paths without collision", async () => {
+    // ffmpeg succeeds for both calls
+    mockSuccess();
+
+    const [r1, r2] = await Promise.all([
+      generateTitleCard("Clip A", 5, "/tmp/seg1.mp4"),
+      generateTitleCard("Clip B", 5, "/tmp/seg2.mp4"),
+    ]);
+
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    // Each call targets a different output file
+    if (r1.ok && r2.ok) {
+      expect(r1.value).toBe("/tmp/seg1.mp4");
+      expect(r2.value).toBe("/tmp/seg2.mp4");
+    }
+  });
+});
+
+describe("stabilizeClip — vidstab availability", () => {
+  it("returns source path unchanged when vidstab filter is missing", async () => {
+    // ffmpeg -filters returns output without 'vidstab'
+    mockSuccess("V.. scale               Scale the input video", "");
+
+    const result = await stabilizeClip("input.mp4", "output.mp4");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe("input.mp4"); // source returned as-is
+    }
+  });
+
+  it("runs two-pass stabilization when vidstab is available", async () => {
+    // First call: -filters probe (contains 'vidstab')
+    // Subsequent calls: detect pass + transform pass
+    let callCount = 0;
+    mockExecFile.mockImplementation((...args: unknown[]) => {
+      callCount++;
+      const cb = args[args.length - 1] as ExecCallback;
+      const stdout = callCount === 1 ? "V.. vidstabdetect  Video stabilization" : "";
+      cb(null, stdout, "");
+      return {} as ReturnType<typeof execFile>;
+    });
+
+    const result = await stabilizeClip("input.mp4", "output.mp4", { smoothing: 5 });
+    expect(result.ok).toBe(true);
+    expect(callCount).toBe(3); // probe + detect pass + transform pass
   });
 });

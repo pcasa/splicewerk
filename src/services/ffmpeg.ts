@@ -482,8 +482,20 @@ export async function generateTitleCard(
 }
 
 /**
+ * Returns true if the local ffmpeg was built with --enable-libvidstab.
+ */
+async function isVidstabSupported(): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(FFMPEG_BIN, ["-filters"], { timeout: 5000 })
+    return stdout.includes("vidstab")
+  } catch {
+    return false
+  }
+}
+
+/**
  * Stabilize a shaky video clip using the vidstab filter (two-pass).
- * Requires ffmpeg built with --enable-libvidstab.
+ * Falls back to copying the source untouched if vidstab is not available.
  */
 export async function stabilizeClip(
   input: string,
@@ -491,6 +503,11 @@ export async function stabilizeClip(
   opts?: { smoothing?: number; shakiness?: number }
 ): Promise<Result<string>> {
   log("info", "stabilizeClip", { input, output, opts });
+
+  if (!(await isVidstabSupported())) {
+    log("warn", "stabilizeClip: vidstab not available, returning source as-is")
+    return { ok: true, value: input }
+  }
 
   const trfPath = output + ".vidstab.trf";
 

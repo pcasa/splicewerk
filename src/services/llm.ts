@@ -71,7 +71,7 @@ EDL (Edit Decision List) JSON Schema:
       "processor": "'ffmpeg' | 'runway' | 'elevenlabs'",
       "source": "string (optional) - single source file path",
       "sources": "[{ source: string, trim?: string }] (optional) - multiple sources",
-      "operation": "string (optional) - ffmpeg operation",
+      "operation": "'stabilize' | 'concat' | 'overlay' (optional) - ffmpeg operation; use 'stabilize' for shaky footage",
       "prompt": "string (optional) - AI generation prompt",
       "durationSeconds": "number (optional)",
       "trim": "string (optional) - e.g. '0:00-0:05'",

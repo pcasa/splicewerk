@@ -297,3 +297,63 @@ try {
 - Next round: focus on the integration test for concurrent overlays
 
 DONE
+
+---
+
+**2026-03-23 17:00 – Nemotron:**
+*Summary:* Addressing remaining open items with a focus on stabilization fallback, EDL system prompt enhancement, and proposing a test for concurrent overlays.
+
+*Observations / Concerns:*
+- **Vidstab Fallback Missing**: No pre-check for vidstab filter availability in `stabilizeClip()`, potentially leading to ffmpeg errors.
+- **Incomplete EDL System Prompt**: Omission of "stabilize" operation in the EDL system prompt may prevent LLM from generating this operation.
+- **Concurrent Overlay Test Gap**: Lack of integration test for simultaneous title card requests could mask race conditions or cleanup issues.
+
+*Suggested Changes:*
+```typescript
+// videoUtils.ts – stabilizeClip
+async function isVidstabSupported(ffmpegPath: string): Promise<boolean> {
+  try {
+    const { stdout } = await exec(`${ffmpegPath} -filters`);
+    return stdout.includes('vidstab');
+  } catch (error) {
+    console.error('Error checking vidstab support:', error);
+    return false;
+  }
+}
+
+// Within stabilizeClip implementation
+if (!(await isVidstabSupported(ffmpegPath))) {
+  console.warn('vidstab filter not available, skipping stabilization');
+  return originalClip; // or a fallback strategy
+}
+```
+
+```typescript
+// edlSystemPrompt.ts – add stabilize to valid operations
+const systemPrompt = `
+  ... (existing prompt content)
+  Valid operations: trim, overlay, stabilize, concat
+`;
+```
+
+```typescript
+// test/concurrentOverlays.test.ts
+describe('Concurrent Text Overlays', () => {
+  it('should handle two simultaneous requests without collision', async () => {
+    const req1 = makeTextOverlay('Request 1', 'path/to/output1');
+    const req2 = makeTextOverlay('Request 2', 'path/to/output2');
+    await Promise.all([req1, req2]);
+    expect(fs.existsSync('path/to/output1')).toBe(true);
+    expect(fs.existsSync('path/to/output2')).toBe(true);
+    fs.rm('path/to/output1', { force: true });
+    fs.rm('path/to/output2', { force: true });
+  });
+});
+```
+
+*Next Steps:*
+- **Implement Vidstab Check**: Integrate `isVidstabSupported` into `stabilizeClip()` to handle unsupported scenarios gracefully.
+- **Update EDL System Prompt**: Incorporate "stabilize" into the valid operations list.
+- **Run Concurrent Overlay Test**: Execute and refine the `concurrentOverlays.test.ts` to ensure robustness under load.
+
+DONE
