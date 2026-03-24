@@ -176,6 +176,7 @@
       margin-bottom: 4px;
     }
     .msg-thinking { color: #444; font-style: italic; }
+    .msg-metrics { font-size: 11px; color: #555; margin-top: 4px; }
 
     .chat-input-row { display: flex; gap: 8px; }
     .chat-input {
@@ -468,6 +469,16 @@
             const finalText = replyText || thinkingText || '(no reply)'
             replyEl.querySelector('.msg-content').textContent = finalText
             chatHistory.push({ role: 'assistant', content: finalText })
+            // Show cost metrics badge if the server sent them
+            try {
+              const metrics = JSON.parse(payload)
+              if (metrics && typeof metrics === 'object' && metrics.tokens) {
+                const badge = document.createElement('div')
+                badge.className = 'msg-metrics'
+                badge.textContent = `${metrics.tokens} tokens · ${metrics.latency_ms}ms`
+                replyEl.appendChild(badge)
+              }
+            } catch { /* payload was empty string — pre-badge server */ }
           }
 
           if (eventType === 'error') {

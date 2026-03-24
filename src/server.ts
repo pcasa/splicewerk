@@ -216,7 +216,10 @@ const server = createServer(async (req, res) => {
       }
 
       const latency_ms = Date.now() - startTime
-      sendEvent('done', '')
+      // Approximate token count: NIM streaming doesn't always include a usage chunk,
+      // so we estimate from character count (avg ~4 chars/token for English).
+      const approxTokens = Math.round((fullContent.length + fullThinking.length) / 4)
+      sendEvent('done', JSON.stringify({ latency_ms, tokens: approxTokens }))
       void logPrompt({
         source: 'ui-chat',
         model: NEMOTRON,
