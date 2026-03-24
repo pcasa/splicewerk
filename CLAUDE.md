@@ -223,6 +223,7 @@ INNGEST_DEV=1
 
 # AI Services
 NVIDIA_API_KEY=          # NVIDIA NIM — Nemotron models
+LLM_MODEL=               # Override EDL generation model (default: nvidia/llama-3.3-nemotron-super-49b-v1)
 RUNWAY_API_KEY=          # Runway Gen-4 Turbo
 SHOTSTACK_API_KEY=       # Shotstack Edit API
 ELEVENLABS_API_KEY=      # ElevenLabs SFX

@@ -196,8 +196,11 @@ export async function callLLM(
         return { ok: false, error: 'No content in LLM response' }
       }
 
+      if (data.usage?.total_tokens == null) {
+        console.warn('[LLM] usage.total_tokens missing from response — token count will not be logged')
+      }
       console.log(`[LLM] Success on attempt ${attempt}`)
-      return { ok: true, value: content, tokens: data.usage?.total_tokens }
+      return { ok: true, value: content, tokens: data.usage?.total_tokens ?? 0 }
     } catch (err: unknown) {
       lastError = err instanceof Error ? err.message : String(err)
       console.warn(`[LLM] Fetch error: ${lastError} (attempt ${attempt})`)
@@ -277,19 +280,21 @@ CRITICAL RULES:
   let modelUsed = DEFAULT_MODEL
 
   // Fallback to local Ollama if NIM fails
+  let provider: 'nim' | 'ollama' = 'nim'
   if (!result.ok) {
     console.warn(`[LLM] NIM model failed, falling back to local Ollama: ${FALLBACK_MODEL}`)
     result = await callLLM(messages, { model: FALLBACK_MODEL }, OLLAMA_BASE_URL)
     modelUsed = FALLBACK_MODEL
+    provider = 'ollama'
   }
 
   if (!result.ok) {
-    void logPrompt({ source: 'generate-edl', model: modelUsed, messages_in: messages, latency_ms, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
+    void logPrompt({ source: 'generate-edl', model: modelUsed, provider, messages_in: messages, latency_ms, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
       .catch(() => {})
     return { ok: false, error: `LLM call failed: ${result.error}` }
   }
 
-  void logPrompt({ source: 'generate-edl', model: modelUsed, messages_in: messages, response_out: result.value, tokens_used: result.tokens, latency_ms, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
+  void logPrompt({ source: 'generate-edl', model: modelUsed, provider, messages_in: messages, response_out: result.value, tokens_used: result.tokens, latency_ms, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
     .catch(() => {})
 
   // Strip markdown fences if present

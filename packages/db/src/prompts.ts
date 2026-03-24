@@ -5,6 +5,7 @@ export type PromptLogEntry = {
   source: 'ui-chat' | 'pipeline' | 'pipeline-baseline' | 'generate-edl'
   step?: string
   model: string
+  provider?: 'nim' | 'ollama'
   messages_in: Array<{ role: string; content: string | unknown[] }>
   response_out?: string
   tokens_used?: number
