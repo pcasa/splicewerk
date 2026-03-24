@@ -95,6 +95,7 @@ async function downloadVideo(url: string): Promise<ArrayBuffer> {
 /**
  * Poll a Runway task until it succeeds or fails.
  * Polls every 5 seconds, max 60 attempts (~5 min timeout).
+ * Used by the standalone imageToVideo/textToVideo/editVideo convenience functions.
  */
 async function pollTask(
   taskId: string,
@@ -117,6 +118,68 @@ async function pollTask(
   throw new Error(
     `[Runway] Task ${taskId} timed out after ${MAX_POLL_ATTEMPTS} attempts`
   )
+}
+
+// ─── Durable-step helpers (used by Inngest step.sleep() poll loops) ───────────
+
+/**
+ * Create a Runway image-to-video task without waiting for it to finish.
+ * Returns the task ID so an Inngest function can poll with step.sleep().
+ */
+export async function createImageToVideoTask(
+  imagePath: string,
+  prompt: string,
+  durationSeconds: 5 | 10
+): Promise<Result<string>> {
+  const apiKey = getApiKey()
+  if (!apiKey) return { ok: false, error: 'RUNWAY_API_KEY not set' }
+  const client = new RunwayML({ apiKey })
+  try {
+    const { buffer, mimeType } = await prepareImageForRunway(imagePath)
+    const dataUrl = `data:${mimeType};base64,${buffer.toString('base64')}`
+    const task = await client.imageToVideo.create({
+      model: 'gen4_turbo',
+      promptImage: dataUrl,
+      promptText: prompt,
+      duration: durationSeconds,
+      ratio: '1280:720',
+    })
+    console.log(`[Runway] createImageToVideoTask: ${task.id}`)
+    return { ok: true, value: task.id }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export type RunwayTaskResult =
+  | { status: 'pending' }
+  | { status: 'succeeded'; path: string }
+  | { status: 'failed'; error: string }
+
+/**
+ * Check a Runway task once and download the result if it succeeded.
+ * Intended to be called from inside an Inngest step.run() after a step.sleep().
+ */
+export async function checkRunwayTask(
+  taskId: string,
+  outputPath: string
+): Promise<RunwayTaskResult> {
+  const apiKey = getApiKey()
+  if (!apiKey) return { status: 'failed', error: 'RUNWAY_API_KEY not set' }
+  const client = new RunwayML({ apiKey })
+  const task = await client.tasks.retrieve(taskId)
+  console.log(`[Runway] checkRunwayTask ${taskId}: ${task.status}`)
+  if (task.status === 'FAILED') {
+    return { status: 'failed', error: task.failure ?? 'generation failed' }
+  }
+  if (task.status !== 'SUCCEEDED') {
+    return { status: 'pending' }
+  }
+  const videoBuffer = await downloadVideo(task.output[0])
+  await fs.mkdir(path.dirname(outputPath), { recursive: true })
+  await fs.writeFile(outputPath, Buffer.from(videoBuffer))
+  console.log(`[Runway] checkRunwayTask downloaded to: ${outputPath}`)
+  return { status: 'succeeded', path: outputPath }
 }
 
 // ─── Cost Estimation ─────────────────────────────────────────────────────────

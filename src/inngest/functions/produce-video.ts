@@ -3,7 +3,8 @@ import { inngest } from '../client.js'
 import { catalogAssets } from '../../services/asset-catalog.js'
 import { generateEDL } from '../../services/llm.js'
 import { trimClip, loadFormatPresets, generateTitleCard, imageToClip, stabilizeClip } from '../../services/ffmpeg.js'
-import { imageToVideo, textToVideo } from '../../services/runway.js'
+import { createImageToVideoTask, checkRunwayTask } from '../../services/runway.js'
+import type { RunwayTaskResult } from '../../services/runway.js'
 import { uploadFile, assembleClips } from '../../services/shotstack.js'
 import type { AssemblySegment, AssemblyOptions } from '../../services/shotstack.js'
 import type { EDL, TimelineSegment } from '../../edl/types.js'
@@ -13,6 +14,7 @@ import { upsertRun, updateRunStatus, logCost } from '@splicewerk/db'
 
 type StepTools = {
   run: <T>(name: string, fn: () => T | Promise<T>) => Promise<T>
+  sleep: (name: string, duration: string) => Promise<void>
   waitForEvent: (name: string, opts: unknown) => Promise<unknown>
 }
 
@@ -129,18 +131,28 @@ export async function produceVideoPipeline(
     await fs.mkdir(outputDir, { recursive: true })
   })
 
-  // Step 5: Render segments → local paths + durations
-  const renderedSegments = await step.run(
-    'render-segments',
-    async (): Promise<{ path: string; durationSeconds: number }[]> => {
-      const results: { path: string; durationSeconds: number }[] = []
+  // ── Shared source-resolver (used across render steps) ──────────────────────
+  type RunwayJob = {
+    segIndex: number
+    segId: string
+    sourcePath: string
+    prompt: string
+    duration: 5 | 10
+    outputPath: string
+  }
 
+  // Step 5a: Render all non-Runway segments (ffmpeg) + collect Runway jobs
+  // Runway image-to-video tasks are created here but polled durably in step 5b.
+  const { ffmpegResults, runwayJobs } = await step.run(
+    'render-segments-ffmpeg',
+    async (): Promise<{
+      ffmpegResults: ({ path: string; durationSeconds: number } | null)[]
+      runwayJobs: RunwayJob[]
+    }> => {
       // Build filename → full path lookup from the manifest
       const assetByFilename = new Map(
         manifest.files.map((f) => [f.filename.toLowerCase(), f.path])
       )
-      // Also build a map keyed by the numeric portion of the filename (e.g. "0295" → path)
-      // so LLM-hallucinated names like "0295.mp4" match actual files like "IMG_0295.MOV"
       const assetByNumber = new Map<string, string>()
       for (const f of manifest.files) {
         const nums = f.filename.match(/\d+/)
@@ -148,14 +160,11 @@ export async function produceVideoPipeline(
       }
       const resolveSource = (source: string): string => {
         if (source.startsWith('/')) return source
-        // 1. Exact match
         const exact = assetByFilename.get(source.toLowerCase())
         if (exact) return exact
-        // 2. Strip extension and try again
         const noExt = source.replace(/\.[^.]+$/, '').toLowerCase()
         const noExtMatch = assetByFilename.get(noExt)
         if (noExtMatch) return noExtMatch
-        // 3. Match by leading number sequence (e.g. "0295.mp4" → "0295" → IMG_0295.MOV)
         const nums = source.match(/\d+/)
         if (nums) {
           const numMatch = assetByNumber.get(nums[0]!)
@@ -164,55 +173,52 @@ export async function produceVideoPipeline(
         return source
       }
 
+      const results: ({ path: string; durationSeconds: number } | null)[] = new Array(edl.timeline.length).fill(null)
+      const jobs: RunwayJob[] = []
+
       for (let i = 0; i < edl.timeline.length; i++) {
         const seg = edl.timeline[i] as TimelineSegment
         const outputPath = `${renderedDir}/seg${i + 1}.mp4`
-
         const sourcePath = seg.source ? resolveSource(seg.source) : null
         const processor = inferProcessor(seg, sourcePath)
 
         if (processor === 'runway') {
-          // Runway: image → video only. Text/generated → ffmpeg title card (free).
           if (sourcePath && isImageSource(sourcePath)) {
-            const duration = clampRunwayDuration(seg.durationSeconds)
-            const segPrompt = seg.prompt ?? `Cinematic motion for: ${seg.type}`
-            const runwayResult = await imageToVideo(sourcePath, segPrompt, duration)
-            if (runwayResult.ok) {
-              results.push({ path: runwayResult.value, durationSeconds: duration })
-            } else {
-              // Fallback: static image clip via ffmpeg (no Runway credits needed)
-              console.warn(`[produce-video] Runway failed for ${seg.id} (${runwayResult.error}) — falling back to static ffmpeg clip`)
-              const fallbackResult = await imageToClip(sourcePath, seg.durationSeconds ?? duration, outputPath)
-              if (!fallbackResult.ok) throw new Error(`ffmpeg imageToClip fallback failed for ${seg.id}: ${fallbackResult.error}`)
-              results.push({ path: outputPath, durationSeconds: seg.durationSeconds ?? duration })
-            }
+            // Queue for durable step.sleep() poll in step 5b
+            jobs.push({
+              segIndex: i,
+              segId: seg.id,
+              sourcePath,
+              prompt: seg.prompt ?? `Cinematic motion for: ${seg.type}`,
+              duration: clampRunwayDuration(seg.durationSeconds),
+              outputPath,
+            })
           } else {
-            // No image source — generate a title card with ffmpeg
+            // No image source → ffmpeg title card (no Runway credits)
             const titleText = seg.textOverlay?.text ?? seg.prompt ?? seg.id
             const duration = seg.durationSeconds ?? 5
             const result = await generateTitleCard(titleText, duration, outputPath)
             if (!result.ok) throw new Error(`Title card failed for ${seg.id}: ${result.error}`)
-            results.push({ path: outputPath, durationSeconds: duration })
+            results[i] = { path: outputPath, durationSeconds: duration }
           }
 
         } else if (processor === 'ffmpeg' && sourcePath) {
           if (seg.operation === 'stabilize') {
             const result = await stabilizeClip(sourcePath, outputPath, { smoothing: 5 })
             if (!result.ok) throw new Error(`Stabilize failed for ${seg.id}: ${result.error}`)
-            results.push({ path: outputPath, durationSeconds: seg.durationSeconds ?? 5 })
+            results[i] = { path: outputPath, durationSeconds: seg.durationSeconds ?? 5 }
           } else if (seg.trim) {
             const [startStr, endStr] = seg.trim.split('-')
             const startSec = parseTrimTime(startStr ?? '0')
             const endSec = parseTrimTime(endStr ?? '0')
             const result = await trimClip(sourcePath, startSec, endSec, outputPath)
             if (!result.ok) throw new Error(`Failed to trim segment ${seg.id}: ${result.error}`)
-            results.push({ path: outputPath, durationSeconds: endSec - startSec })
+            results[i] = { path: outputPath, durationSeconds: endSec - startSec }
           } else {
-            // No trim — use source directly, but verify file exists first
             const duration = seg.durationSeconds ?? 5
             try {
               await fs.access(sourcePath)
-              results.push({ path: sourcePath, durationSeconds: duration })
+              results[i] = { path: sourcePath, durationSeconds: duration }
             } catch {
               console.warn(`[produce-video] Skipping segment ${seg.id}: file not found at "${sourcePath}"`)
             }
@@ -222,9 +228,51 @@ export async function produceVideoPipeline(
         }
       }
 
-      return results
+      return { ffmpegResults: results, runwayJobs: jobs }
     }
   )
+
+  // Step 5b: For each Runway image-to-video job, create task then poll durably
+  // Each poll is a separate step.sleep() + step.run() — safe for serverless timeouts.
+  const RUNWAY_MAX_POLLS = 60
+  const runwaySegmentResults = new Map<number, { path: string; durationSeconds: number }>()
+
+  for (const job of runwayJobs) {
+    const taskResult = await step.run(`runway-create-${job.segId}`, async () => {
+      return createImageToVideoTask(job.sourcePath, job.prompt, job.duration)
+    })
+
+    if (!taskResult.ok) {
+      console.warn(`[produce-video] Runway task create failed for ${job.segId}: ${taskResult.error}`)
+      // Fall through — segment will be absent from final assembly
+      continue
+    }
+
+    let settled = false
+    for (let poll = 1; poll <= RUNWAY_MAX_POLLS; poll++) {
+      await step.sleep(`runway-wait-${job.segId}-${poll}`, '5s')
+      const checkResult = await step.run(
+        `runway-check-${job.segId}-${poll}`,
+        async (): Promise<RunwayTaskResult> => checkRunwayTask(taskResult.value, job.outputPath)
+      )
+      if (checkResult.status === 'succeeded') {
+        runwaySegmentResults.set(job.segIndex, { path: checkResult.path, durationSeconds: job.duration })
+        settled = true
+        break
+      }
+      if (checkResult.status === 'failed') {
+        console.warn(`[produce-video] Runway failed for ${job.segId}: ${checkResult.error}`)
+        settled = true
+        break
+      }
+    }
+    if (!settled) console.warn(`[produce-video] Runway timed out for ${job.segId}`)
+  }
+
+  // Merge ffmpeg + Runway results into ordered segment list
+  const renderedSegments = ffmpegResults
+    .map((r, i) => runwaySegmentResults.get(i) ?? r)
+    .filter((r): r is { path: string; durationSeconds: number } => r !== null)
 
   // Step 6: Upload rendered segments to Shotstack ingest
   const hostedSegments = await step.run(
