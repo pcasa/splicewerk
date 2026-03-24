@@ -30,7 +30,7 @@ export interface ChannelConfig {
 // Primary: NVIDIA NIM hosted endpoint (requires NVIDIA_API_KEY)
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY ?? ''
 const NIM_BASE_URL = 'https://integrate.api.nvidia.com/v1'
-const DEFAULT_MODEL = process.env.LLM_MODEL ?? 'meta/llama-3.3-70b-instruct'
+const DEFAULT_MODEL = process.env.LLM_MODEL ?? 'nvidia/llama-3.3-nemotron-super-49b-v1'
 
 // Nemotron models on NIM — used for the AI-to-AI pipeline (Nemotron → Runway)
 // nemotron-nano-12b-v2-vl: vision-language, can analyze logo images directly
@@ -131,7 +131,7 @@ export async function callLLM(
   options: LLMOptions = {},
   baseUrl = NIM_BASE_URL,
   authHeader?: string
-): Promise<Result<string>> {
+): Promise<Result<string> & { tokens?: number }> {
   const {
     model = DEFAULT_MODEL,
     temperature = 0.7,
@@ -188,6 +188,7 @@ export async function callLLM(
 
       const data = (await response.json()) as {
         choices: { message: { content: string } }[]
+        usage?: { total_tokens?: number }
       }
 
       const content = data.choices?.[0]?.message?.content
@@ -196,7 +197,7 @@ export async function callLLM(
       }
 
       console.log(`[LLM] Success on attempt ${attempt}`)
-      return { ok: true, value: content }
+      return { ok: true, value: content, tokens: data.usage?.total_tokens }
     } catch (err: unknown) {
       lastError = err instanceof Error ? err.message : String(err)
       console.warn(`[LLM] Fetch error: ${lastError} (attempt ${attempt})`)
@@ -270,21 +271,25 @@ CRITICAL RULES:
   // Try primary model via NVIDIA NIM
   console.log(`[LLM] Generating EDL with model=${DEFAULT_MODEL}`)
   const nimAuth = NVIDIA_API_KEY ? `Bearer ${NVIDIA_API_KEY}` : undefined
+  const startTime = Date.now()
   let result = await callLLM(messages, { model: DEFAULT_MODEL }, NIM_BASE_URL, nimAuth)
+  const latency_ms = Date.now() - startTime
+  let modelUsed = DEFAULT_MODEL
 
   // Fallback to local Ollama if NIM fails
   if (!result.ok) {
     console.warn(`[LLM] NIM model failed, falling back to local Ollama: ${FALLBACK_MODEL}`)
     result = await callLLM(messages, { model: FALLBACK_MODEL }, OLLAMA_BASE_URL)
+    modelUsed = FALLBACK_MODEL
   }
 
   if (!result.ok) {
-    void logPrompt({ source: 'generate-edl', model: DEFAULT_MODEL, messages_in: messages, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
+    void logPrompt({ source: 'generate-edl', model: modelUsed, messages_in: messages, latency_ms, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
       .catch(() => {})
     return { ok: false, error: `LLM call failed: ${result.error}` }
   }
 
-  void logPrompt({ source: 'generate-edl', model: DEFAULT_MODEL, messages_in: messages, response_out: result.value, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
+  void logPrompt({ source: 'generate-edl', model: modelUsed, messages_in: messages, response_out: result.value, tokens_used: result.tokens, latency_ms, metadata: { assetCount: assetManifest.files.length }, run_id: runId })
     .catch(() => {})
 
   // Strip markdown fences if present
