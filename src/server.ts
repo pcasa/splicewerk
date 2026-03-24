@@ -163,10 +163,13 @@ const server = createServer(async (req, res) => {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     }
 
+    const startTime = Date.now()
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
       const nimRes = await fetch(`${NIM_URL}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        headers,
         body: JSON.stringify({ model: NEMOTRON, messages, stream: true, temperature: 0.4, max_tokens: 800 }),
       })
 
@@ -212,12 +215,15 @@ const server = createServer(async (req, res) => {
         }
       }
 
+      const latency_ms = Date.now() - startTime
       sendEvent('done', '')
       void logPrompt({
         source: 'ui-chat',
         model: NEMOTRON,
+        provider: 'nim',
         messages_in: messages,
         response_out: fullContent || fullThinking,
+        latency_ms,
         metadata: { historyLength: history.length },
       }).catch(err => console.warn('[DB] logPrompt (ui-chat) failed:', err))
     } catch (err) {

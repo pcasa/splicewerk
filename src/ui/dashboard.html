@@ -397,6 +397,8 @@
   }
 
   // ── Nemotron chat ────────────────────────────────────────────────────────────
+  const chatHistory = []  // { role: 'user'|'assistant', content: string }
+
   async function sendChat() {
     const input = document.getElementById('chatInput')
     const q = input.value.trim()
@@ -404,21 +406,93 @@
 
     input.value = ''
     addMessage('user', q)
+    chatHistory.push({ role: 'user', content: q })
 
-    const thinking = addMessage('nemotron', '...', true)
+    // Placeholder stays until done or error — never remove it early
+    const replyEl = addMessage('nemotron', '…', true)
+    let replyText = ''
+    let thinkingText = ''
 
     try {
-      const res  = await fetch('/api/nemotron', {
+      const res = await fetch('/api/nemotron', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: q })
+        body: JSON.stringify({ message: q, history: chatHistory.slice(0, -1) })
       })
-      const data = await res.json()
-      thinking.remove()
-      addMessage('nemotron', data.reply)
+
+      if (!res.ok || !res.body) {
+        replyEl.classList.remove('msg-thinking')
+        replyEl.querySelector('.msg-content').textContent = `❗ Server error: HTTP ${res.status}`
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      // Parse SSE: events separated by \n\n, each event has "event: X\ndata: Y" lines
+      const processBuffer = () => {
+        const events = buffer.split('\n\n')
+        buffer = events.pop() ?? ''  // keep the incomplete trailing chunk
+
+        for (const block of events) {
+          let eventType = ''
+          let dataLine = ''
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event:')) eventType = line.slice(6).trim()
+            if (line.startsWith('data:'))  dataLine  = line.slice(5).trim()
+          }
+          if (!eventType || !dataLine) continue
+
+          let payload = ''
+          try { payload = JSON.parse(dataLine) } catch { payload = dataLine }
+
+          if (eventType === 'thinking' && payload) {
+            thinkingText += payload
+            // Show thinking in italic as a hint it's in progress
+            replyEl.classList.add('msg-thinking')
+            replyEl.querySelector('.msg-content').textContent = `💭 ${thinkingText.slice(-120)}…`
+          }
+
+          if (eventType === 'token' && payload) {
+            replyText += payload
+            replyEl.classList.remove('msg-thinking')
+            replyEl.querySelector('.msg-content').textContent = replyText
+            // Keep scroll pinned
+            const box = document.getElementById('chatMessages')
+            box.scrollTop = box.scrollHeight
+          }
+
+          if (eventType === 'done') {
+            replyEl.classList.remove('msg-thinking')
+            const finalText = replyText || thinkingText || '(no reply)'
+            replyEl.querySelector('.msg-content').textContent = finalText
+            chatHistory.push({ role: 'assistant', content: finalText })
+          }
+
+          if (eventType === 'error') {
+            replyEl.classList.remove('msg-thinking')
+            replyEl.querySelector('.msg-content').textContent = `❗ ${payload}`
+          }
+        }
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        processBuffer()
+      }
+      // Flush any remaining buffered data
+      if (buffer.trim()) {
+        buffer += '\n\n'
+        processBuffer()
+      }
+
     } catch(e) {
-      thinking.remove()
-      addMessage('nemotron', 'Error reaching Nemotron — check the server.')
+      replyEl.classList.remove('msg-thinking')
+      replyEl.querySelector('.msg-content').textContent = '❗ Error reaching Nemotron — check the server.'
+      console.error(e)
     }
   }
 
@@ -426,7 +500,7 @@
     const box = document.getElementById('chatMessages')
     const div = document.createElement('div')
     div.className = `msg msg-${role}${thinking ? ' msg-thinking' : ''}`
-    div.innerHTML = `<div class="msg-label">${role === 'user' ? 'You' : 'Nemotron'}</div>${text}`
+    div.innerHTML = `<div class="msg-label">${role === 'user' ? 'You' : 'Nemotron'}</div><div class="msg-content">${text}</div>`
     box.appendChild(div)
     box.scrollTop = box.scrollHeight
     return div
