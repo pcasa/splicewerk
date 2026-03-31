@@ -2,7 +2,7 @@ import { supabase } from './client.js'
 
 export type CostEntry = {
   run_id: string
-  service: 'runway' | 'shotstack' | 'nim' | 'elevenlabs' | 'supabase'
+  service: 'runway' | 'shotstack' | 'nim' | 'elevenlabs' | 'fal-ai' | 'supabase'
   operation: string
   units?: number
   unit_type?: string
