@@ -54,6 +54,7 @@ export async function produceVideoPipeline(
   edl: EDL | null
   masterPath: string | null
   outputs: string[]
+  validation: unknown
   dryRun: boolean
 }> {
   const { prompt, assetsDir, formats, projectName, dryRun = false } = event.data
@@ -90,6 +91,7 @@ export async function produceVideoPipeline(
       edl,
       masterPath: null,
       outputs: [],
+      validation: null,
       dryRun: true,
     }
   }

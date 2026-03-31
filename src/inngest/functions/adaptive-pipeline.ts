@@ -13,7 +13,7 @@ export const adaptivePipeline = inngest.createFunction(
     name: 'Adaptive AI Pipeline',
     triggers: [{ event: 'pipeline/run' as AdaptivePipelineEvent['name'] }],
   },
-  async ({ event, step }: { event: AdaptivePipelineEvent; step: import('inngest').GetStepTools<typeof inngest> }) => {
+  async ({ event, step }: { event: AdaptivePipelineEvent & { id: string }; step: import('inngest').GetStepTools<typeof inngest> }) => {
     const { projectDir, assets: initialAssets, userIntent } = event.data
 
     // Load the registry once — validates all functions are discoverable
