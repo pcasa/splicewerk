@@ -32,13 +32,27 @@ async function tryLogCost(entry: {
   }
 }
 
-// Cost-per-second estimates for AI video services (USD)
-const COST_PER_SEC: Record<string, { service: 'runway' | 'fal-ai'; costPerSec: number }> = {
-  generateRunwayClip:      { service: 'runway',  costPerSec: 0.05 },
-  runwayEditVideo:         { service: 'runway',  costPerSec: 0.05 },
-  generateFalClip:         { service: 'fal-ai',  costPerSec: 0.03 },
-  generateTextToVideoFal:  { service: 'fal-ai',  costPerSec: 0.03 },
-  generateImageFal:        { service: 'fal-ai',  costPerSec: 0 },   // flat ~$0.025/image, logged separately
+// Cost estimates for AI services (USD)
+type CostEntry =
+  | { service: 'runway' | 'fal-ai' | 'elevenlabs'; costType: 'per-sec'; rate: number }
+  | { service: 'runway' | 'fal-ai' | 'elevenlabs'; costType: 'per-char'; rate: number }
+  | { service: 'runway' | 'fal-ai' | 'elevenlabs'; costType: 'flat'; rate: number }
+
+const AI_COSTS: Record<string, CostEntry> = {
+  // Runway — $0.05/sec
+  generateRunwayClip:      { service: 'runway',     costType: 'per-sec',  rate: 0.05 },
+  runwayEditVideo:         { service: 'runway',     costType: 'per-sec',  rate: 0.05 },
+  // fal.ai video — $0.03/sec (Kling default)
+  generateFalClip:         { service: 'fal-ai',    costType: 'per-sec',  rate: 0.03 },
+  generateTextToVideoFal:  { service: 'fal-ai',    costType: 'per-sec',  rate: 0.03 },
+  // fal.ai image — flat ~$0.025/image
+  generateImageFal:        { service: 'fal-ai',    costType: 'flat',     rate: 0.025 },
+  // ElevenLabs TTS — ~$0.0003/character (Creator plan)
+  generateVoiceover:       { service: 'elevenlabs', costType: 'per-char', rate: 0.0003 },
+  // ElevenLabs SFX — ~$0.002/sec
+  generateSFX:             { service: 'elevenlabs', costType: 'per-sec',  rate: 0.002 },
+  // ElevenLabs Music — ~$0.02/sec (more expensive; requires Creator plan)
+  generateMusicBed:        { service: 'elevenlabs', costType: 'per-sec',  rate: 0.02 },
 }
 
 const MAX_ITERATIONS = 15
@@ -159,18 +173,34 @@ export const adaptivePipeline = inngest.createFunction(
             console.log(`[adaptive] ${plannedStep.functionName} done in ${durationMs}ms → ${JSON.stringify(outputs)}`)
 
             // Log AI service costs
-            const costInfo = COST_PER_SEC[plannedStep.functionName]
+            const costInfo = AI_COSTS[plannedStep.functionName]
             if (costInfo) {
-              const durationSec = durationMs / 1000
-              const costUsd = costInfo.costPerSec > 0
-                ? Math.round(costInfo.costPerSec * durationSec * 10000) / 10000
-                : 0.025 // flat image gen cost
+              let units: number
+              let unit_type: string
+              let costUsd: number
+
+              if (costInfo.costType === 'per-sec') {
+                units = durationMs / 1000
+                unit_type = 'seconds'
+                costUsd = Math.round(costInfo.rate * units * 10000) / 10000
+              } else if (costInfo.costType === 'per-char') {
+                const text = (plannedStep.inputs.text ?? plannedStep.inputs.prompt ?? '') as string
+                units = text.length
+                unit_type = 'characters'
+                costUsd = Math.round(costInfo.rate * units * 10000) / 10000
+              } else {
+                // flat
+                units = 1
+                unit_type = 'image'
+                costUsd = costInfo.rate
+              }
+
               void tryLogCost({
                 run_id: event.id,
                 service: costInfo.service,
                 operation: plannedStep.functionName,
-                units: durationSec,
-                unit_type: costInfo.costPerSec > 0 ? 'seconds' : 'image',
+                units,
+                unit_type,
                 cost_usd: costUsd,
                 metadata: { stepId: plannedStep.id, durationMs },
               })
