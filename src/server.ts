@@ -256,8 +256,28 @@ const server = createServer(async (req, res) => {
       totalSteps: m.debug?.totalStepsExecuted ?? 0,
     }))
 
+    // Merge Supabase historical runs (different function types, e.g. logo-reveal, produce-video)
+    const manifestIds = new Set(manifestRuns.map(r => r.id))
+    try {
+      const dbRuns = await getRecentRuns(50)
+      for (const r of dbRuns) {
+        if (!manifestIds.has(r.run_id)) {
+          manifestRuns.push({
+            id: r.run_id,
+            functionId: r.function_id,
+            status: r.status,
+            startedAt: r.started_at,
+            endedAt: r.ended_at,
+            prompt_used: r.prompt_used,
+            output_url: r.output_url,
+            totalSteps: 0,
+          })
+          manifestIds.add(r.run_id)
+        }
+      }
+    } catch { /* Supabase unavailable */ }
+
     // Supplement with live Inngest status (catches currently-running jobs)
-    let liveRunIds = new Set<string>()
     try {
       const from = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() // last 2h
       const gql = {
@@ -275,8 +295,7 @@ const server = createServer(async (req, res) => {
       const edges = (gqlData.data?.runs?.edges ?? []) as Array<{ node: GqlNode }>
       for (const e of edges) {
         const status = e.node.status.charAt(0).toUpperCase() + e.node.status.slice(1).toLowerCase()
-        if (status !== 'Completed') {
-          // Running/Failed run not yet written to disk — include it
+        if (status !== 'Completed' && !manifestIds.has(e.node.id)) {
           manifestRuns.unshift({
             id: e.node.id,
             functionId: e.node.function?.slug ?? 'adaptive-pipeline',
@@ -288,9 +307,11 @@ const server = createServer(async (req, res) => {
             totalSteps: 0,
           })
         }
-        liveRunIds.add(e.node.id)
       }
     } catch { /* Inngest unavailable — disk manifests are enough */ }
+
+    // Sort newest first
+    manifestRuns.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
 
     return json(res, { runs: manifestRuns })
   }
