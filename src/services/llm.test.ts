@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { AssetManifest } from '../edl/types.js'
-import { callLLM, generateEDL } from './llm.js'
+import { callLLM, generateEDL, validateVideoOutput } from './llm.js'
 
 // Prevent logPrompt from making real Supabase fetch calls in tests
 vi.mock('@splicewerk/db', () => ({
@@ -286,5 +286,127 @@ describe('generateEDL', () => {
     expect(systemMessage?.content).toContain('EDL (Edit Decision List) JSON Schema')
     expect(systemMessage?.content).toContain('timeline')
     expect(systemMessage?.content).toContain('thumbnail')
+  })
+})
+
+// ─── validateVideoOutput tests ───
+
+// Top-level mock so hoisting works correctly
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    readFile: vi.fn().mockResolvedValue(Buffer.from('fake-image-data')),
+  }
+})
+
+const mockValidation = {
+  verdict: 'pass' as const,
+  summary: 'Frames closely match the description.',
+  issues: [],
+}
+
+describe('validateVideoOutput', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('sends correct multimodal message shape — max 5 image_url blocks + 1 text block', async () => {
+    const fetchMock = makeOkFetch(JSON.stringify(mockValidation))
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const frames = ['/f/a.jpg', '/f/b.jpg', '/f/c.jpg']
+    await validateVideoOutput(frames, 'sports car drifting')
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const body = JSON.parse(init.body as string) as {
+      model: string
+      messages: Array<{ role: string; content: unknown }>
+    }
+
+    // Must use vision model
+    expect(body.model).toBe('meta/llama-4-maverick-17b-128e-instruct')
+
+    const userMsg = body.messages.find((m) => m.role === 'user')
+    expect(userMsg).toBeDefined()
+    const content = userMsg!.content as Array<{ type: string }>
+    const imageBlocks = content.filter((b) => b.type === 'image_url')
+    const textBlocks = content.filter((b) => b.type === 'text')
+
+    expect(imageBlocks.length).toBe(3) // one per frame
+    expect(imageBlocks.length).toBeLessThanOrEqual(5)
+    expect(textBlocks.length).toBe(1)
+    expect((textBlocks[0] as { type: string; text: string }).text).toContain('sports car drifting')
+  })
+
+  it('evenly samples when given more than 5 frames', async () => {
+    const fetchMock = makeOkFetch(JSON.stringify(mockValidation))
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    // 10 frames — should be sampled down to 5
+    const frames = Array.from({ length: 10 }, (_, i) => `/f/frame_${i}.jpg`)
+    await validateVideoOutput(frames, 'test prompt')
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<{ role: string; content: unknown }>
+    }
+    const userMsg = body.messages.find((m) => m.role === 'user')
+    const content = userMsg!.content as Array<{ type: string }>
+    const imageBlocks = content.filter((b) => b.type === 'image_url')
+
+    expect(imageBlocks.length).toBe(5)
+  })
+
+  it('parses JSON response correctly into VideoValidation', async () => {
+    const validation = {
+      verdict: 'needs-work' as const,
+      summary: 'Color palette does not match.',
+      issues: ['Colors are off', 'Motion blur missing'],
+      promptFix: 'Add motion blur',
+      runwayPromptFix: 'Use faster shutter speed',
+    }
+    global.fetch = makeOkFetch(JSON.stringify(validation)) as unknown as typeof fetch
+
+    const result = await validateVideoOutput(['/f/a.jpg'], 'fast car')
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.value.verdict).toBe('needs-work')
+      expect(result.value.summary).toBe('Color palette does not match.')
+      expect(result.value.issues).toHaveLength(2)
+      expect(result.value.promptFix).toBe('Add motion blur')
+      expect(result.value.runwayPromptFix).toBe('Use faster shutter speed')
+    }
+  })
+
+  it('returns { ok: false } when callLLM fails', async () => {
+    global.fetch = make503Fetch() as unknown as typeof fetch
+
+    const promise = validateVideoOutput(['/f/a.jpg'], 'test prompt')
+    await vi.runAllTimersAsync()
+    const result = await promise
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toContain('LLM call failed')
+    }
+  })
+
+  it('returns { ok: false } when response is not valid JSON', async () => {
+    global.fetch = makeOkFetch('not json at all }{') as unknown as typeof fetch
+
+    const result = await validateVideoOutput(['/f/a.jpg'], 'test prompt')
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toContain('Failed to parse validation response as JSON')
+    }
   })
 })

@@ -137,9 +137,9 @@ describe('CLI handlers', () => {
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('DIMENSIONS'))
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('FPS'))
       // Check that youtube row was printed
-      const allCalls = consoleLogSpy.mock.calls.map((args) => args.join(' '))
-      expect(allCalls.some((line) => line.includes('youtube'))).toBe(true)
-      expect(allCalls.some((line) => line.includes('1920x1080'))).toBe(true)
+      const allCalls = consoleLogSpy.mock.calls.map((args: unknown[]) => args.join(' '))
+      expect(allCalls.some((line: string) => line.includes('youtube'))).toBe(true)
+      expect(allCalls.some((line: string) => line.includes('1920x1080'))).toBe(true)
     })
 
     it('prints unlimited for formats with no max duration', async () => {
@@ -147,11 +147,11 @@ describe('CLI handlers', () => {
 
       handleFormats()
 
-      const allCalls = consoleLogSpy.mock.calls.map((args) => args.join(' '))
+      const allCalls = consoleLogSpy.mock.calls.map((args: unknown[]) => args.join(' '))
       // youtube has maxDuration: null → should print 'unlimited'
-      expect(allCalls.some((line) => line.includes('unlimited'))).toBe(true)
+      expect(allCalls.some((line: string) => line.includes('unlimited'))).toBe(true)
       // instagram-reels has maxDuration: 90 → should print '90s'
-      expect(allCalls.some((line) => line.includes('90s'))).toBe(true)
+      expect(allCalls.some((line: string) => line.includes('90s'))).toBe(true)
     })
   })
 

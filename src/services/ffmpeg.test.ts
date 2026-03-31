@@ -16,6 +16,8 @@ import {
   getFormatPreset,
   generateTitleCard,
   stabilizeClip,
+  applyEffects,
+  extractFrames,
 } from "./ffmpeg.js";
 
 // Grab a typed reference to the mock
@@ -314,5 +316,90 @@ describe("stabilizeClip — vidstab availability", () => {
     const result = await stabilizeClip("input.mp4", "output.mp4", { smoothing: 5 });
     expect(result.ok).toBe(true);
     expect(callCount).toBe(3); // probe + detect pass + transform pass
+  });
+});
+
+describe("applyEffects", () => {
+  it("applies teal-orange grade and contrast filter chain", async () => {
+    mockSuccess();
+    const result = await applyEffects("input.mp4", "output.mp4", {
+      contrast: 1.15,
+      glow: 0.25,
+      grade: "teal-orange",
+    });
+    expect(result.ok).toBe(true);
+    const args = captureArgs();
+    const vfIdx = args.indexOf("-vf");
+    expect(vfIdx).toBeGreaterThan(-1);
+    const vfValue = args[vfIdx + 1];
+    expect(vfValue).toContain("curves=");
+    expect(vfValue).toContain("eq=contrast=");
+  });
+
+  it("passes -c copy when no filters are active", async () => {
+    mockSuccess();
+    const result = await applyEffects("input.mp4", "output.mp4", {
+      contrast: 1.0,
+      glow: 0,
+      grade: "none",
+    });
+    expect(result.ok).toBe(true);
+    const args = captureArgs();
+    expect(args).toContain("-c");
+    expect(args).toContain("copy");
+    expect(args.indexOf("-vf")).toBe(-1);
+  });
+
+  it("returns { ok: false } when ffmpeg exits non-zero", async () => {
+    mockFailure("ffmpeg effects error");
+    const result = await applyEffects("input.mp4", "output.mp4", { grade: "cool" });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("extractFrames", () => {
+  // Mock node:fs/promises for mkdir and readdir
+  vi.mock("node:fs/promises", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:fs/promises")>();
+    return {
+      ...actual,
+      mkdir: vi.fn().mockResolvedValue(undefined),
+      rm: vi.fn().mockResolvedValue(undefined),
+      readdir: vi.fn().mockResolvedValue(["frame_0001.jpg", "frame_0002.jpg", "frame_0003.jpg"]),
+    };
+  });
+
+  it("calls ffmpeg with correct -vf fps=1/2 args for intervalSeconds=2", async () => {
+    mockSuccess();
+    const result = await extractFrames("video.mp4", 2, "/tmp/frames");
+    expect(result.ok).toBe(true);
+    const args = captureArgs();
+    const vfIdx = args.indexOf("-vf");
+    expect(vfIdx).toBeGreaterThan(-1);
+    expect(args[vfIdx + 1]).toBe("fps=1/2");
+    expect(args).toContain("-i");
+    expect(args).toContain("video.mp4");
+  });
+
+  it("returns the list of extracted frame paths sorted", async () => {
+    mockSuccess();
+    const result = await extractFrames("video.mp4", 5, "/tmp/frames");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual([
+        "/tmp/frames/frame_0001.jpg",
+        "/tmp/frames/frame_0002.jpg",
+        "/tmp/frames/frame_0003.jpg",
+      ]);
+    }
+  });
+
+  it("returns { ok: false } when ffmpeg fails", async () => {
+    mockFailure("ffmpeg frame extraction error");
+    const result = await extractFrames("video.mp4", 2, "/tmp/frames");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("ffmpeg frame extraction error");
+    }
   });
 });

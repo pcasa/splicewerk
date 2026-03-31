@@ -19,39 +19,10 @@ vi.mock('../../services/asset-catalog.js', () => ({
 }))
 
 vi.mock('../../services/llm.js', () => ({
-  generateEDL: vi.fn().mockResolvedValue({
+  generateEDL: vi.fn(),
+  validateVideoOutput: vi.fn().mockResolvedValue({
     ok: true,
-    value: {
-      project: {
-        title: 'Test Video',
-        targetDurationSeconds: 60,
-        aspectRatio: '16:9',
-        resolution: '1920x1080',
-        outputFormats: ['youtube'],
-      },
-      missingAssets: [],
-      timeline: [
-        {
-          id: 'seg1',
-          type: 'clip',
-          processor: 'ffmpeg',
-          source: '/assets/clip1.mp4',
-          trim: '0-10',
-        },
-      ],
-      audio: {
-        backgroundMusic: {
-          source: '/assets/music.mp3',
-          volume: 0.3,
-          fadeIn: 2,
-          fadeOut: 2,
-        },
-      },
-      thumbnail: {
-        type: 'split',
-        style: 'before-after',
-      },
-    },
+    value: { verdict: 'pass', summary: 'Video matches description well.', issues: [] },
   }),
 }))
 
@@ -60,18 +31,37 @@ vi.mock('../../services/ffmpeg.js', () => ({
   mixAudio: vi.fn().mockResolvedValue({ ok: true, value: 'projects/test/rendered/master_mixed.mp4' }),
   reformat: vi.fn().mockResolvedValue({ ok: true, value: 'projects/test/output/youtube/output.mp4' }),
   trimClip: vi.fn().mockResolvedValue({ ok: true, value: 'projects/test/rendered/seg1.mp4' }),
+  extractFrames: vi.fn().mockResolvedValue({ ok: true, value: ['frame_0001.jpg', 'frame_0002.jpg'] }),
+  loadFormatPresets: vi.fn().mockReturnValue({
+    youtube: { width: 1920, height: 1080, fps: 30 },
+    'instagram-reels': { width: 1080, height: 1920, fps: 30 },
+    tiktok: { width: 1080, height: 1920, fps: 30 },
+  }),
 }))
 
-vi.mock('node:fs/promises', () => ({
-  mkdir: vi.fn().mockResolvedValue(undefined),
+vi.mock('../../services/shotstack.js', () => ({
+  uploadFile: vi.fn().mockResolvedValue({ ok: true, value: 'https://cdn.shotstack.io/test/seg1.mp4' }),
+  assembleClips: vi.fn().mockResolvedValue({ ok: true, value: 'projects/test/output/youtube/output.mp4' }),
 }))
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    rm: vi.fn().mockResolvedValue(undefined),
+    access: vi.fn().mockResolvedValue(undefined),
+  }
+})
 
 // ─── Import after mocks ───
 
 import { produceVideo, produceVideoPipeline } from './produce-video.js'
 import { catalogAssets } from '../../services/asset-catalog.js'
-import { generateEDL } from '../../services/llm.js'
-import { concatClips, reformat } from '../../services/ffmpeg.js'
+import { generateEDL, validateVideoOutput } from '../../services/llm.js'
+import { concatClips, reformat, extractFrames } from '../../services/ffmpeg.js'
+import { assembleClips } from '../../services/shotstack.js'
 
 // ─── Fixtures (after imports) ───
 
@@ -123,16 +113,12 @@ const mockEDL = {
 
 // ─── Helpers ───
 
-type StepMock = {
-  run: ReturnType<typeof vi.fn>
-  waitForEvent: ReturnType<typeof vi.fn>
-}
-
-function createMockStep(): StepMock {
+function createMockStep() {
   return {
     run: vi.fn().mockImplementation((_name: string, fn: () => unknown) => fn()),
     waitForEvent: vi.fn(),
-  }
+    sleep: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Parameters<typeof produceVideoPipeline>[1]
 }
 
 type EventData = {
@@ -167,6 +153,11 @@ describe('produceVideo', () => {
     vi.mocked(generateEDL).mockResolvedValue({ ok: true, value: mockEDL })
     vi.mocked(concatClips).mockResolvedValue({ ok: true, value: 'projects/test/rendered/master.mp4' })
     vi.mocked(reformat).mockResolvedValue({ ok: true, value: 'projects/test/output/youtube/output.mp4' })
+    vi.mocked(extractFrames).mockResolvedValue({ ok: true, value: ['frame_0001.jpg', 'frame_0002.jpg'] })
+    vi.mocked(validateVideoOutput).mockResolvedValue({
+      ok: true,
+      value: { verdict: 'pass', summary: 'Looks good.', issues: [] },
+    })
   })
 
   it('is exported and has correct id and event trigger', () => {
@@ -222,32 +213,32 @@ describe('produceVideo', () => {
     expect(concatClips).not.toHaveBeenCalled()
   })
 
-  it('calls reformat once per requested format', async () => {
+  it('calls assembleClips once per requested format', async () => {
     const mockStep = createMockStep()
     const mockEvent = createMockEvent({ formats: ['youtube', 'instagram-reels', 'tiktok'] })
 
-    vi.mocked(reformat)
+    vi.mocked(assembleClips)
       .mockResolvedValueOnce({ ok: true, value: 'output/youtube/output.mp4' })
       .mockResolvedValueOnce({ ok: true, value: 'output/instagram-reels/output.mp4' })
       .mockResolvedValueOnce({ ok: true, value: 'output/tiktok/output.mp4' })
 
     await produceVideoPipeline(mockEvent, mockStep, 'test-run-id')
 
-    expect(reformat).toHaveBeenCalledTimes(3)
-    expect(reformat).toHaveBeenCalledWith(
-      expect.any(String),
-      'youtube',
-      expect.stringContaining('youtube')
+    expect(assembleClips).toHaveBeenCalledTimes(3)
+    expect(assembleClips).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.stringContaining('youtube'),
+      expect.objectContaining({ width: 1920, height: 1080 })
     )
-    expect(reformat).toHaveBeenCalledWith(
-      expect.any(String),
-      'instagram-reels',
-      expect.stringContaining('instagram-reels')
+    expect(assembleClips).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.stringContaining('instagram-reels'),
+      expect.objectContaining({ width: 1080, height: 1920 })
     )
-    expect(reformat).toHaveBeenCalledWith(
-      expect.any(String),
-      'tiktok',
-      expect.stringContaining('tiktok')
+    expect(assembleClips).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.stringContaining('tiktok'),
+      expect.objectContaining({ width: 1080, height: 1920 })
     )
   })
 
@@ -259,9 +250,35 @@ describe('produceVideo', () => {
 
     expect(result.projectName).toBe('my-project')
     expect(result.edl).toEqual(mockEDL)
-    expect(result.masterPath).toBeTruthy()
+    expect(result.masterPath).toBeNull()
     expect(Array.isArray(result.outputs)).toBe(true)
     expect(result.outputs.length).toBe(1)
     expect(result.dryRun).toBe(false)
+  })
+
+  it('runs Step 10 validation and includes result in return value', async () => {
+    const mockStep = createMockStep()
+    const mockEvent = createMockEvent({ prompt: 'Cinematic car reveal', projectName: 'my-project' })
+
+    const result = await produceVideoPipeline(mockEvent, mockStep)
+
+    expect(extractFrames).toHaveBeenCalledWith(
+      expect.stringContaining('output.mp4'),
+      2,
+      expect.stringContaining('validation-frames')
+    )
+    expect(validateVideoOutput).toHaveBeenCalledWith(
+      ['frame_0001.jpg', 'frame_0002.jpg'],
+      'Cinematic car reveal'
+    )
+    expect(result.validation).toEqual({ verdict: 'pass', summary: 'Looks good.', issues: [] })
+  })
+
+  it('returns null validation and continues when frame extraction fails', async () => {
+    vi.mocked(extractFrames).mockResolvedValueOnce({ ok: false, error: 'ffmpeg not found' })
+    const mockStep = createMockStep()
+    const result = await produceVideoPipeline(createMockEvent(), mockStep)
+    expect(result.validation).toBeNull()
+    expect(validateVideoOutput).not.toHaveBeenCalled()
   })
 })

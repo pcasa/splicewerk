@@ -51,7 +51,7 @@ describe('ElevenLabs Service', () => {
   describe('generateSFX', () => {
     it('sends POST to correct URL with correct body', async () => {
       mockFetchOk()
-      const { generateSFX } = await import('./elevenlabs.ts')
+      const { generateSFX } = await import('./elevenlabs.js')
 
       await generateSFX('explosion sound', 3)
 
@@ -70,7 +70,7 @@ describe('ElevenLabs Service', () => {
 
     it('includes xi-api-key header', async () => {
       mockFetchOk()
-      const { generateSFX } = await import('./elevenlabs.ts')
+      const { generateSFX } = await import('./elevenlabs.js')
 
       await generateSFX('wind', 2)
 
@@ -81,7 +81,7 @@ describe('ElevenLabs Service', () => {
 
     it('saves file to output dir and returns file path', async () => {
       mockFetchOk()
-      const { generateSFX } = await import('./elevenlabs.ts')
+      const { generateSFX } = await import('./elevenlabs.js')
 
       const result = await generateSFX('rain', 5)
 
@@ -98,7 +98,7 @@ describe('ElevenLabs Service', () => {
 
     it('returns { ok: false } on non-2xx response with status in error', async () => {
       mockFetchError(429)
-      const { generateSFX } = await import('./elevenlabs.ts')
+      const { generateSFX } = await import('./elevenlabs.js')
 
       const result = await generateSFX('fire crackle', 4)
 
@@ -110,7 +110,7 @@ describe('ElevenLabs Service', () => {
     it('returns { ok: false, error: "ELEVENLABS_API_KEY not set" } when API key missing', async () => {
       delete process.env.ELEVENLABS_API_KEY
       mockFetchOk()
-      const { generateSFX } = await import('./elevenlabs.ts')
+      const { generateSFX } = await import('./elevenlabs.js')
 
       const result = await generateSFX('thunder', 2)
 
@@ -126,7 +126,7 @@ describe('ElevenLabs Service', () => {
   describe('generateTTS', () => {
     it('uses default voice ID when none provided', async () => {
       mockFetchOk()
-      const { generateTTS } = await import('./elevenlabs.ts')
+      const { generateTTS } = await import('./elevenlabs.js')
 
       await generateTTS('Hello world')
 
@@ -136,7 +136,7 @@ describe('ElevenLabs Service', () => {
 
     it('uses provided voice ID when given', async () => {
       mockFetchOk()
-      const { generateTTS } = await import('./elevenlabs.ts')
+      const { generateTTS } = await import('./elevenlabs.js')
 
       await generateTTS('Hello world', 'custom-voice-xyz')
 
@@ -146,7 +146,7 @@ describe('ElevenLabs Service', () => {
 
     it('saves file to output dir with tts_ prefix and returns path', async () => {
       mockFetchOk()
-      const { generateTTS } = await import('./elevenlabs.ts')
+      const { generateTTS } = await import('./elevenlabs.js')
 
       const result = await generateTTS('Narrator speaks here')
 
@@ -161,7 +161,7 @@ describe('ElevenLabs Service', () => {
   describe('generateMusic', () => {
     it('sends request to sound-generation endpoint', async () => {
       mockFetchOk()
-      const { generateMusic } = await import('./elevenlabs.ts')
+      const { generateMusic } = await import('./elevenlabs.js')
 
       await generateMusic('epic orchestral', 10)
 
@@ -171,7 +171,7 @@ describe('ElevenLabs Service', () => {
 
     it('saves file with music_ prefix', async () => {
       mockFetchOk()
-      const { generateMusic } = await import('./elevenlabs.ts')
+      const { generateMusic } = await import('./elevenlabs.js')
 
       const result = await generateMusic('ambient drone', 15)
 
@@ -186,7 +186,7 @@ describe('ElevenLabs Service', () => {
   describe('File write behavior', () => {
     it('calls fs.writeFile with correct path pattern for SFX', async () => {
       mockFetchOk()
-      const { generateSFX } = await import('./elevenlabs.ts')
+      const { generateSFX } = await import('./elevenlabs.js')
 
       const result = await generateSFX('beep', 1)
       expect(result.ok).toBe(true)

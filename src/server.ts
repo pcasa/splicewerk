@@ -1,22 +1,22 @@
 import 'dotenv/config'
 import * as fs from 'node:fs/promises'
-import { createWriteStream, mkdirSync } from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { serve } from 'inngest/node'
-import busboy from 'busboy'
 import { inngest } from './inngest/client.js'
 import { produceVideo } from './inngest/functions/produce-video.js'
 import { logoReveal } from './inngest/functions/logo-reveal.js'
-import { callLLM } from './services/llm.js'
+import { enhanceFootage } from './inngest/functions/enhance-footage.js'
+import { adaptivePipeline } from './inngest/functions/adaptive-pipeline.js'
+import { callLLM, validateVideoOutput } from './services/llm.js'
 import { logPrompt, getRecentRuns, getRunCosts, getRunCostsSummary, getPromptLogs } from '@splicewerk/db'
 
-const handler = serve({ client: inngest, functions: [produceVideo, logoReveal] })
+const handler = serve({ client: inngest, functions: [produceVideo, logoReveal, enhanceFootage, adaptivePipeline] })
 const PORT      = Number(process.env.PORT ?? 3000)
 const INNGEST   = 'http://localhost:8288'
 const NIM_URL   = 'https://integrate.api.nvidia.com/v1'
-const NEMOTRON  = 'nvidia/nemotron-3-nano-30b-a3b'
+const NEMOTRON  = 'nvidia/llama-3.3-nemotron-super-49b-v1'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DASHBOARD = path.join(__dirname, 'ui', 'dashboard.html')
 
@@ -46,7 +46,12 @@ async function sendInngestEvent(name: string, data: unknown): Promise<string> {
   return result.ids?.[0] ?? 'unknown'
 }
 
-const NEMOTRON_SYSTEM = `Autobahn Syndicate's Video Production AI. User Inputs: Media (clips/images) + Plain Language Instructions. Output: Optimized EDL. Brand Guidelines: Colors #E02828 & #F46E2C, Montserrat Font. Prioritize Dynamic, High-Performance Aesthetic. Execute via Splicewerk Pipeline (ffmpeg, Runway Gen-4, Shotstack).`
+const NEMOTRON_SYSTEM = `You are a video production pipeline architect advising the Splicewerk team.
+Stack: NVIDIA NIM (Nemotron) for AI prompts and advice, Runway Gen-4 Turbo for cinematic video effects,
+Shotstack for cloud video assembly, sharp + ffmpeg for local processing, Inngest for pipeline orchestration.
+Current project: Autobahn Syndicate brand logo reveal — German automotive performance brand.
+Colors: #E02828 red, #F46E2C orange. Font: Montserrat.
+Be direct, specific, and actionable.`
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
@@ -77,6 +82,76 @@ const server = createServer(async (req, res) => {
     return json(res, { id })
   }
 
+  // Trigger footage enhancement pipeline
+  if (url === '/api/enhance' && req.method === 'POST') {
+    const body = await readBody(req) as Record<string, unknown>
+    if (!body.inputVideoPath || !body.projectDir) {
+      return json(res, { error: 'inputVideoPath and projectDir are required' }, 400)
+    }
+    // Auto-copy brand.json from cinematic-intro if not present in projectDir
+    const brandJsonDest = path.join(String(body.projectDir), 'brand.json')
+    try {
+      await fs.access(brandJsonDest)
+    } catch {
+      await fs.copyFile('projects/cinematic-intro/brand.json', brandJsonDest).catch(() => {})
+    }
+    const id = await sendInngestEvent('footage/enhance-requested', {
+      inputVideoPath: body.inputVideoPath,
+      projectDir:     body.projectDir,
+      introVideoPath: body.introVideoPath,
+      scrollingLines: body.scrollingLines,
+      endCardTitle:   body.endCardTitle,
+      endCardStats:   body.endCardStats,
+      fadeInSec:      body.fadeInSec  ?? 1,
+      fadeOutSec:     body.fadeOutSec ?? 1,
+      stabilization:  body.stabilization,
+    })
+    return json(res, { id })
+  }
+
+  // Trigger adaptive AI pipeline
+  if (url === '/api/pipeline/run' && req.method === 'POST') {
+    const body = await readBody(req) as Record<string, unknown>
+    if (!body.projectDir || !body.rawFootagePath || !body.userIntent) {
+      return json(res, { error: 'projectDir, rawFootagePath, and userIntent are required' }, 400)
+    }
+    const projectDir = String(body.projectDir)
+
+    // Auto-copy brand.json from cinematic-intro if not present
+    const brandJsonDest = path.join(projectDir, 'brand.json')
+    try {
+      await fs.access(brandJsonDest)
+    } catch {
+      await fs.copyFile('projects/cinematic-intro/brand.json', brandJsonDest).catch(() => {})
+    }
+
+    // Build asset manifest by discovering what exists on disk
+    const assets: Record<string, string> = {
+      rawFootage:  String(body.rawFootagePath),
+      brandConfig: brandJsonDest,
+    }
+
+    // Discover brand intro from cinematic-intro project
+    const introCandidates = [
+      'projects/cinematic-intro/logo-reveal.mp4',
+      path.join(projectDir, 'logo-reveal.mp4'),
+    ]
+    for (const candidate of introCandidates) {
+      try {
+        await fs.access(candidate)
+        assets.brandIntro = candidate
+        break
+      } catch { /* not found */ }
+    }
+
+    const id = await sendInngestEvent('pipeline/run', {
+      projectDir,
+      assets,
+      userIntent: String(body.userIntent),
+    })
+    return json(res, { id, assets })
+  }
+
   // Approve Runway gate
   if (url === '/api/approve' && req.method === 'POST') {
     const body = await readBody(req) as Record<string, unknown>
@@ -84,18 +159,8 @@ const server = createServer(async (req, res) => {
     return json(res, { id })
   }
 
-  // Recent Inngest runs (DB first, fallback to Inngest GraphQL)
+  // Recent Inngest runs (local dev server uses GraphQL)
   if (url === '/api/runs') {
-    try {
-      const rows = await getRecentRuns(10)
-      if (rows.length > 0) {
-        return json(res, { runs: rows.map(r => ({ id: r.run_id, functionId: r.function_id, status: r.status, startedAt: r.started_at, endedAt: r.ended_at })) })
-      }
-    } catch {
-      // fall through to Inngest GraphQL
-    }
-
-    // Fallback: Inngest GraphQL (local dev before any DB runs exist)
     try {
       const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
       const gql = {
@@ -109,9 +174,9 @@ const server = createServer(async (req, res) => {
         body: JSON.stringify(gql),
       })
       const gqlData = await r.json() as { data?: { runs?: { edges?: Array<{ node: unknown }> } } }
-      const edges = gqlData.data?.runs?.edges ?? []
       type GqlNode = { id: string; status: string; startedAt: string; endedAt?: string; function?: { slug: string } }
-      const runs = edges.map((e: { node: GqlNode }) => ({
+      const edges = (gqlData.data?.runs?.edges ?? []) as Array<{ node: GqlNode }>
+      const runs = edges.map((e) => ({
         id: e.node.id,
         functionId: e.node.function?.slug ?? 'unknown',
         status: e.node.status.charAt(0).toUpperCase() + e.node.status.slice(1).toLowerCase() as string,
@@ -136,7 +201,7 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // Nemotron chat — SSE streaming
+  // Nemotron chat
   if (url === '/api/nemotron' && req.method === 'POST') {
     const body  = await readBody(req) as Record<string, unknown>
     const message = String(body.message ?? '')
@@ -151,90 +216,8 @@ const server = createServer(async (req, res) => {
       { role: 'user' as const, content: message },
     ]
 
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Expose-Headers': 'Content-Type',
-    })
-
-    const sendEvent = (event: string, data: string) => {
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-    }
-
-    const startTime = Date.now()
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-      const nimRes = await fetch(`${NIM_URL}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ model: NEMOTRON, messages, stream: true, temperature: 0.4, max_tokens: 800 }),
-      })
-
-      if (!nimRes.ok || !nimRes.body) {
-        sendEvent('error', `NIM error: HTTP ${nimRes.status}`)
-        res.end()
-        return
-      }
-
-      const reader = nimRes.body.getReader()
-      req.on('close', () => void reader.cancel().catch(() => {}))
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let fullContent = ''
-      let fullThinking = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-
-        for (const line of lines) {
-          const trimmed = line.trim()
-          if (!trimmed.startsWith('data:')) continue
-          const data = trimmed.slice(5).trim()
-          if (data === '[DONE]') continue
-          try {
-            const chunk = JSON.parse(data)
-            const delta = chunk.choices?.[0]?.delta
-            if (!delta) continue
-            if (delta.reasoning_content) {
-              fullThinking += delta.reasoning_content
-              sendEvent('thinking', delta.reasoning_content)
-            }
-            if (delta.content) {
-              fullContent += delta.content
-              sendEvent('token', delta.content)
-            }
-          } catch { /* skip malformed chunks */ }
-        }
-      }
-
-      const latency_ms = Date.now() - startTime
-      // Approximate token count: NIM streaming doesn't always include a usage chunk,
-      // so we estimate from character count (avg ~4 chars/token for English).
-      const approxTokens = Math.round((fullContent.length + fullThinking.length) / 4)
-      sendEvent('done', JSON.stringify({ latency_ms, tokens: approxTokens }))
-      void logPrompt({
-        source: 'ui-chat',
-        model: NEMOTRON,
-        provider: 'nim',
-        messages_in: messages,
-        response_out: fullContent || fullThinking,
-        latency_ms,
-        metadata: { historyLength: history.length },
-      }).catch(err => console.warn('[DB] logPrompt (ui-chat) failed:', err))
-    } catch (err) {
-      sendEvent('error', err instanceof Error ? err.message : String(err))
-    }
-
-    res.end()
-    return
+    const result = await callLLM(messages, { model: NEMOTRON, temperature: 0.4, maxTokens: 800 }, NIM_URL, `Bearer ${apiKey}`)
+    return json(res, { reply: result.ok ? result.value : `Error: ${result.error}` })
   }
 
   // Service credits status
@@ -433,6 +416,188 @@ const server = createServer(async (req, res) => {
     } catch {
       return json(res, { run: null, costs: [], prompts: [] })
     }
+  }
+
+  // List all project directories — uploads AND named projects — with video files and pipeline run manifests
+  if (url === '/api/projects' && req.method === 'GET') {
+    try {
+      const projectsRoot = 'projects'
+      const entries = await fs.readdir(projectsRoot, { withFileTypes: true })
+      const allDirs = entries.filter(e => e.isDirectory()).map(e => e.name)
+
+      const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm'])
+
+      const projects = await Promise.all(
+        allDirs.map(async (dirName) => {
+          const dirPath = `${projectsRoot}/${dirName}`
+          let files: Array<{ name: string; path: string; size: number; mtime: number }> = []
+          let pipelineRuns: unknown[] = []
+
+          try {
+            const dirEntries = await fs.readdir(dirPath, { withFileTypes: true })
+
+            // Video files
+            const videoFiles = dirEntries.filter(e => {
+              if (!e.isFile()) return false
+              const ext = e.name.slice(e.name.lastIndexOf('.')).toLowerCase()
+              return VIDEO_EXTS.has(ext)
+            })
+            files = await Promise.all(
+              videoFiles.map(async (e) => {
+                const filePath = `${dirPath}/${e.name}`
+                const stat = await fs.stat(filePath)
+                return { name: e.name, path: filePath, size: stat.size, mtime: stat.mtimeMs }
+              })
+            )
+            files.sort((a, b) => b.mtime - a.mtime)
+
+            // Pipeline run manifests
+            const runFiles = dirEntries.filter(e => e.isFile() && e.name.startsWith('pipeline-run-') && e.name.endsWith('.json'))
+            pipelineRuns = await Promise.all(
+              runFiles.map(async (e) => {
+                try {
+                  const raw = await fs.readFile(`${dirPath}/${e.name}`, 'utf-8')
+                  return JSON.parse(raw)
+                } catch { return null }
+              })
+            )
+            pipelineRuns = pipelineRuns.filter(Boolean)
+            // Sort newest first by completedAt
+            ;(pipelineRuns as Array<{ completedAt?: string }>).sort((a, b) =>
+              (b.completedAt ?? '').localeCompare(a.completedAt ?? '')
+            )
+          } catch { /* ignore unreadable dirs */ }
+
+          return { sessionDir: dirPath, name: dirName, files, pipelineRuns }
+        })
+      )
+
+      // Return dirs that have videos OR pipeline runs, newest-modified first
+      const active = projects.filter(p => p.files.length > 0 || p.pipelineRuns.length > 0)
+      const withMtime = await Promise.all(
+        active.map(async p => {
+          try { const s = await fs.stat(p.sessionDir); return { ...p, mtime: s.mtimeMs } }
+          catch { return { ...p, mtime: 0 } }
+        })
+      )
+      withMtime.sort((a, b) => b.mtime - a.mtime)
+
+      return json(res, { projects: withMtime })
+    } catch (err) {
+      return json(res, { projects: [], error: String(err) }, 500)
+    }
+  }
+
+  // Validation results for a project
+  if (url.startsWith('/api/validations/') && req.method === 'GET') {
+    const projectName = url.slice('/api/validations/'.length)
+    try {
+      const dir = path.join('projects', projectName)
+      const entries = await fs.readdir(dir)
+      const validationFiles = entries
+        .filter(name => name.startsWith('validation-') && name.endsWith('.json'))
+        .sort()
+        .reverse() // newest first (lexicographic desc works for timestamped names)
+
+      const validations = await Promise.all(
+        validationFiles.map(async (name) => {
+          const raw = await fs.readFile(path.join(dir, name), 'utf-8')
+          return JSON.parse(raw) as unknown
+        })
+      )
+
+      return json(res, { validations })
+    } catch (err) {
+      return json(res, { validations: [], error: String(err) })
+    }
+  }
+
+  // Validate a completed enhance pipeline output using Maverick vision model
+  if (url === '/api/validate' && req.method === 'POST') {
+    const body      = await readBody(req) as Record<string, unknown>
+    const projectDir = String(body.projectDir ?? '')
+    const runId      = String(body.runId ?? '')
+    const pipeline   = (body.pipeline ?? {}) as Record<string, unknown>
+
+    if (!process.env.NVIDIA_API_KEY) return json(res, { error: 'NVIDIA_API_KEY not configured' }, 500)
+
+    const videoPath = path.join(projectDir, 'enhanced-final.mp4')
+    try { await fs.access(videoPath) }
+    catch { return json(res, { error: `enhanced-final.mp4 not found in ${projectDir}` }, 404) }
+
+    // ── Extract 5 key frames with ffmpeg ──────────────────────────────────────
+    // Timestamps: 0s (intro start), 3s (title card mid), 14s (main footage start),
+    // midpoint of main footage, and near the end (end card)
+    const framesDir = path.join(projectDir, 'validation-frames')
+    await fs.mkdir(framesDir, { recursive: true })
+
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    // Get video duration first
+    let duration = 60
+    try {
+      const probe = await execFileAsync('/opt/homebrew/bin/ffprobe', [
+        '-v', 'quiet', '-print_format', 'json', '-show_format', videoPath,
+      ])
+      const info = JSON.parse(probe.stdout) as { format?: { duration?: string } }
+      duration = parseFloat(info.format?.duration ?? '60')
+    } catch { /* use default */ }
+
+    const timestamps = [
+      0,
+      3,
+      14,
+      Math.round(duration * 0.5),
+      Math.max(duration - 3, 15),
+    ]
+
+    const framePaths: string[] = []
+    for (const t of timestamps) {
+      const framePath = path.join(framesDir, `frame-${t}s.jpg`)
+      try {
+        await execFileAsync('/opt/homebrew/bin/ffmpeg', [
+          '-y', '-ss', String(t), '-i', videoPath,
+          '-frames:v', '1', '-q:v', '3', framePath,
+        ])
+        framePaths.push(framePath)
+      } catch { /* skip failed frame */ }
+    }
+
+    if (framePaths.length === 0) {
+      return json(res, { error: 'Could not extract any frames from video' }, 500)
+    }
+
+    // ── Build context description for Maverick ─────────────────────────────
+    const description = `Autobahn Syndicate YouTube video — German automotive performance brand.
+Assembly: [Brand intro logo-reveal] → [10s scrolling title card] → [Stabilized phone footage with fade in/out] → [4s branded end card]
+Title card lines: ${JSON.stringify(pipeline.scrollingLines ?? [])}
+End card: "${pipeline.endCardTitle ?? ''}" / "${pipeline.endCardStats ?? ''}"
+Review for: black gaps, audio bleed, stabilization quality, title card readability, end card appearance, and overall production quality.`
+
+    // ── Call Maverick vision model ─────────────────────────────────────────
+    const result = await validateVideoOutput(framePaths, description, runId)
+    if (!result.ok) return json(res, { error: result.error }, 500)
+
+    const validation = result.value as Record<string, unknown>
+    validation.runId       = runId
+    validation.projectName = path.basename(projectDir)
+    validation.timestamp   = new Date().toISOString()
+
+    // Persist so ValidationPanel can load it later
+    try {
+      await fs.writeFile(
+        path.join(projectDir, `validation-${Date.now()}.json`),
+        JSON.stringify(validation, null, 2),
+        'utf-8'
+      )
+    } catch { /* non-fatal */ }
+
+    // Clean up frames
+    await fs.rm(framesDir, { recursive: true, force: true }).catch(() => {})
+
+    return json(res, { validation })
   }
 
   res.writeHead(404)

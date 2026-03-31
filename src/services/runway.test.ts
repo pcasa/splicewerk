@@ -107,7 +107,7 @@ describe('Runway Service', () => {
 
   describe('imageToVideo', () => {
     it('calls client.imageToVideo.create with correct model and prompt', async () => {
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       await runWithFakeTimers(() => imageToVideo('/tmp/test.jpg', 'a cinematic shot', 5))
 
@@ -119,7 +119,7 @@ describe('Runway Service', () => {
     })
 
     it('reads the image file and encodes to base64 data URL', async () => {
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       await runWithFakeTimers(() => imageToVideo('/tmp/test.jpg', 'a sunset', 5))
 
@@ -134,7 +134,7 @@ describe('Runway Service', () => {
     })
 
     it('detects mime type from .png extension', async () => {
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       await runWithFakeTimers(() => imageToVideo('/tmp/photo.png', 'mountains', 10))
 
@@ -143,7 +143,7 @@ describe('Runway Service', () => {
     })
 
     it('detects mime type from .webp extension', async () => {
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       await runWithFakeTimers(() => imageToVideo('/tmp/photo.webp', 'cityscape', 5))
 
@@ -152,7 +152,7 @@ describe('Runway Service', () => {
     })
 
     it('polls client.tasks.retrieve until SUCCEEDED', async () => {
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       await runWithFakeTimers(() => imageToVideo('/tmp/test.jpg', 'ocean waves', 5))
 
@@ -160,7 +160,7 @@ describe('Runway Service', () => {
     })
 
     it('downloads output URL and saves to output dir', async () => {
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       const result = await runWithFakeTimers(() =>
         imageToVideo('/tmp/test.jpg', 'sunrise', 5)
@@ -177,7 +177,7 @@ describe('Runway Service', () => {
 
     it('returns { ok: false, error: "RUNWAY_API_KEY not set" } when key missing', async () => {
       delete process.env.RUNWAY_API_KEY
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       const result = await imageToVideo('/tmp/test.jpg', 'forest', 5)
 
@@ -195,7 +195,7 @@ describe('Runway Service', () => {
         createdAt: '2024-01-01T00:00:00Z',
       })
 
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       const result = await runWithFakeTimers(() =>
         imageToVideo('/tmp/test.jpg', 'explicit content', 5)
@@ -214,7 +214,7 @@ describe('Runway Service', () => {
         createdAt: '2024-01-01T00:00:00Z',
       })
 
-      const { imageToVideo } = await import('./runway.ts')
+      const { imageToVideo } = await import('./runway.js')
 
       const result = await runWithFakeTimers(() =>
         imageToVideo('/tmp/test.jpg', 'something', 5)
@@ -230,7 +230,7 @@ describe('Runway Service', () => {
 
   describe('textToVideo', () => {
     it('calls client.textToVideo.create with correct params', async () => {
-      const { textToVideo } = await import('./runway.ts')
+      const { textToVideo } = await import('./runway.js')
 
       await runWithFakeTimers(() => textToVideo('a futuristic city', 10))
 
@@ -242,7 +242,7 @@ describe('Runway Service', () => {
     })
 
     it('returns file path on success', async () => {
-      const { textToVideo } = await import('./runway.ts')
+      const { textToVideo } = await import('./runway.js')
 
       const result = await runWithFakeTimers(() => textToVideo('rolling hills', 5))
 
@@ -254,7 +254,7 @@ describe('Runway Service', () => {
 
     it('returns { ok: false, error: "RUNWAY_API_KEY not set" } when key missing', async () => {
       delete process.env.RUNWAY_API_KEY
-      const { textToVideo } = await import('./runway.ts')
+      const { textToVideo } = await import('./runway.js')
 
       const result = await textToVideo('space exploration', 5)
 
@@ -264,7 +264,7 @@ describe('Runway Service', () => {
     })
 
     it('polls tasks.retrieve and downloads output on success', async () => {
-      const { textToVideo } = await import('./runway.ts')
+      const { textToVideo } = await import('./runway.js')
 
       await runWithFakeTimers(() => textToVideo('abstract patterns', 5))
 
@@ -277,7 +277,7 @@ describe('Runway Service', () => {
 
   describe('editVideo', () => {
     it('reads video file and encodes it to base64 data URL', async () => {
-      const { editVideo } = await import('./runway.ts')
+      const { editVideo } = await import('./runway.js')
 
       await runWithFakeTimers(() => editVideo('/tmp/source.mp4', 'make it look cinematic'))
 
@@ -291,7 +291,7 @@ describe('Runway Service', () => {
     })
 
     it('returns file path on success with ev_ prefix', async () => {
-      const { editVideo } = await import('./runway.ts')
+      const { editVideo } = await import('./runway.js')
 
       const result = await runWithFakeTimers(() =>
         editVideo('/tmp/source.mp4', 'add lens flare')
@@ -305,7 +305,7 @@ describe('Runway Service', () => {
 
     it('returns { ok: false, error: "RUNWAY_API_KEY not set" } when key missing', async () => {
       delete process.env.RUNWAY_API_KEY
-      const { editVideo } = await import('./runway.ts')
+      const { editVideo } = await import('./runway.js')
 
       const result = await editVideo('/tmp/source.mp4', 'slow motion')
 
@@ -319,7 +319,7 @@ describe('Runway Service', () => {
 
   describe('estimateCreditCost', () => {
     it('returns durationSeconds * 5', async () => {
-      const { estimateCreditCost } = await import('./runway.ts')
+      const { estimateCreditCost } = await import('./runway.js')
 
       expect(estimateCreditCost(5)).toBe(25)
       expect(estimateCreditCost(10)).toBe(50)
