@@ -431,16 +431,40 @@ Incorporate elements like speed, power, and precision. Style references: high-pe
 
 // ─── Prompt Logging ───
 
-/** Stub: will write to Supabase prompt_logs table in Phase 5. */
+/**
+ * Log an LLM call to the Supabase prompt_logs table.
+ * Gracefully falls back to console.log when SUPABASE_URL is not configured
+ * (e.g. unit tests or local dev without Supabase running).
+ */
 export async function logPrompt(entry: {
   source: string
   model: string
   messages_in?: unknown
   response_out?: string
   run_id?: string
+  latency_ms?: number
+  tokens_used?: number
   metadata?: Record<string, unknown>
 }): Promise<void> {
-  console.log(`[logPrompt] source=${entry.source} model=${entry.model} run_id=${entry.run_id ?? 'n/a'}`)
+  if (!process.env.SUPABASE_URL) {
+    console.log(`[logPrompt] source=${entry.source} model=${entry.model} run_id=${entry.run_id ?? 'n/a'} (Supabase not configured)`)
+    return
+  }
+  try {
+    const { logPrompt: dbLog } = await import('@splicewerk/db')
+    await dbLog({
+      source: entry.source as import('@splicewerk/db').PromptLogEntry['source'],
+      model: entry.model,
+      messages_in: (entry.messages_in as import('@splicewerk/db').PromptLogEntry['messages_in']) ?? [],
+      response_out: entry.response_out,
+      run_id: entry.run_id,
+      latency_ms: entry.latency_ms,
+      tokens_used: entry.tokens_used,
+      metadata: entry.metadata,
+    })
+  } catch (err) {
+    console.warn(`[logPrompt] DB write failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 // ─── Video Validation ───

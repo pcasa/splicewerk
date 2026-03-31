@@ -218,8 +218,19 @@ const server = createServer(async (req, res) => {
       { role: 'user' as const, content: message },
     ]
 
+    const t0 = Date.now()
     const result = await callLLM(messages, { model: NEMOTRON, temperature: 0.4, maxTokens: 800 }, NIM_URL, `Bearer ${apiKey}`)
-    return json(res, { reply: result.ok ? result.value : `Error: ${result.error}` })
+    const latencyMs = Date.now() - t0
+
+    // Log to prompt_logs (non-blocking, best-effort)
+    logPrompt({
+      source: 'ui-chat',
+      model: NEMOTRON,
+      messages_in: messages,
+      response_out: result.ok ? result.value : undefined,
+    }).catch(() => {})
+
+    return json(res, { reply: result.ok ? result.value : `Error: ${result.error}`, latencyMs })
   }
 
   // Service credits status

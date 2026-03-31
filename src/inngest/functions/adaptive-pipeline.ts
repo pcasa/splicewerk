@@ -5,6 +5,42 @@ import { getRegistry } from '../../pipeline/registry.js'
 import { orchestrate } from '../../pipeline/orchestrator.js'
 import type { AdaptivePipelineEvent, AssetState, CompletedStep, PlannedStep } from '../../pipeline/types.js'
 
+// ─── DB helpers — soft-imported so pipeline works without Supabase configured ─
+async function tryUpsertRun(data: {
+  run_id: string; function_id: string; status: string; started_at: string
+  ended_at?: string; prompt_used?: string; output_url?: string
+}): Promise<void> {
+  if (!process.env.SUPABASE_URL) return
+  try {
+    const { upsertRun } = await import('@splicewerk/db')
+    await upsertRun(data as Parameters<typeof upsertRun>[0])
+  } catch (err) {
+    console.warn('[adaptive] DB upsertRun failed (continuing):', err instanceof Error ? err.message : err)
+  }
+}
+
+async function tryLogCost(entry: {
+  run_id: string; service: string; operation: string
+  units?: number; unit_type?: string; cost_usd?: number; metadata?: Record<string, unknown>
+}): Promise<void> {
+  if (!process.env.SUPABASE_URL) return
+  try {
+    const { logCost } = await import('@splicewerk/db')
+    await logCost(entry as Parameters<typeof logCost>[0])
+  } catch (err) {
+    console.warn('[adaptive] DB logCost failed (continuing):', err instanceof Error ? err.message : err)
+  }
+}
+
+// Cost-per-second estimates for AI video services (USD)
+const COST_PER_SEC: Record<string, { service: 'runway' | 'fal-ai'; costPerSec: number }> = {
+  generateRunwayClip:      { service: 'runway',  costPerSec: 0.05 },
+  runwayEditVideo:         { service: 'runway',  costPerSec: 0.05 },
+  generateFalClip:         { service: 'fal-ai',  costPerSec: 0.03 },
+  generateTextToVideoFal:  { service: 'fal-ai',  costPerSec: 0.03 },
+  generateImageFal:        { service: 'fal-ai',  costPerSec: 0 },   // flat ~$0.025/image, logged separately
+}
+
 const MAX_ITERATIONS = 15
 
 export const adaptivePipeline = inngest.createFunction(
@@ -15,6 +51,16 @@ export const adaptivePipeline = inngest.createFunction(
   },
   async ({ event, step }: { event: AdaptivePipelineEvent & { id: string }; step: import('inngest').GetStepTools<typeof inngest> }) => {
     const { projectDir, assets: initialAssets, userIntent } = event.data
+    const startedAt = new Date().toISOString()
+
+    // Persist run start to Supabase (non-blocking)
+    void tryUpsertRun({
+      run_id: event.id,
+      function_id: 'adaptive-pipeline',
+      status: 'Running',
+      started_at: startedAt,
+      prompt_used: userIntent,
+    })
 
     // Load the registry once — validates all functions are discoverable
     await step.run('init-registry', async () => {
@@ -112,6 +158,24 @@ export const adaptivePipeline = inngest.createFunction(
             const durationMs = Date.now() - start
             console.log(`[adaptive] ${plannedStep.functionName} done in ${durationMs}ms → ${JSON.stringify(outputs)}`)
 
+            // Log AI service costs
+            const costInfo = COST_PER_SEC[plannedStep.functionName]
+            if (costInfo) {
+              const durationSec = durationMs / 1000
+              const costUsd = costInfo.costPerSec > 0
+                ? Math.round(costInfo.costPerSec * durationSec * 10000) / 10000
+                : 0.025 // flat image gen cost
+              void tryLogCost({
+                run_id: event.id,
+                service: costInfo.service,
+                operation: plannedStep.functionName,
+                units: durationSec,
+                unit_type: costInfo.costPerSec > 0 ? 'seconds' : 'image',
+                cost_usd: costUsd,
+                metadata: { stepId: plannedStep.id, durationMs },
+              })
+            }
+
             return {
               step: plannedStep,
               outputs,
@@ -156,6 +220,35 @@ export const adaptivePipeline = inngest.createFunction(
       )
     } catch (err) {
       console.warn('[adaptive] Failed to write run manifest:', err)
+    }
+
+    // Persist run completion to Supabase (non-blocking)
+    void tryUpsertRun({
+      run_id: event.id,
+      function_id: 'adaptive-pipeline',
+      status: 'Completed',
+      started_at: startedAt,
+      ended_at: result.completedAt,
+      prompt_used: userIntent,
+      output_url: result.finalOutput ?? undefined,
+    })
+
+    // Persist full manifest to adaptive_pipeline_runs table
+    if (process.env.SUPABASE_URL) {
+      try {
+        const { upsertAdaptivePipelineRun } = await import('@splicewerk/db')
+        await upsertAdaptivePipelineRun({
+          run_id: event.id,
+          user_intent: userIntent,
+          project_dir: projectDir,
+          completed_at: result.completedAt,
+          final_output: result.finalOutput ?? undefined,
+          assets: result.assets,
+          completed_steps: result.completedSteps,
+        })
+      } catch (err) {
+        console.warn('[adaptive] DB upsertAdaptivePipelineRun failed (continuing):', err instanceof Error ? err.message : err)
+      }
     }
 
     return result
