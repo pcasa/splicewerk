@@ -4,15 +4,15 @@
 
 :root {
   --color-bg: #0A0A0A;
-  --color-card: #111111;
-  --color-input: #0D0D0D;
-  --color-border: #222222;
-  --color-border-input: #333333;
+  --color-card: #161616;
+  --color-input: #111111;
+  --color-border: #2A2A2A;
+  --color-border-input: #3A3A3A;
   --color-red: #E02828;
   --color-orange: #F46E2C;
-  --color-text: #F7F6F5;
-  --color-muted: #888888;
-  --color-subtle: #444444;
+  --color-text: #F4F4F5;
+  --color-muted: #A1A1AA;
+  --color-subtle: #71717A;
 }
 
 * {
@@ -33,14 +33,14 @@ body {
   height: 4px;
 }
 ::-webkit-scrollbar-track {
-  background: #111;
+  background: #161616;
 }
 ::-webkit-scrollbar-thumb {
-  background: #333;
+  background: #2A2A2A;
   border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #444;
+  background: #3A3A3A;
 }
 
 /* Status dots */

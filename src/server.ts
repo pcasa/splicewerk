@@ -1,19 +1,22 @@
 import 'dotenv/config'
 import * as fs from 'node:fs/promises'
+import { createWriteStream, mkdirSync } from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { serve } from 'inngest/node'
+import busboy from 'busboy'
 import { inngest } from './inngest/client.js'
 import { produceVideo } from './inngest/functions/produce-video.js'
 import { logoReveal } from './inngest/functions/logo-reveal.js'
 import { callLLM } from './services/llm.js'
+import { logPrompt, getRecentRuns, getRunCosts, getRunCostsSummary, getPromptLogs } from '@splicewerk/db'
 
 const handler = serve({ client: inngest, functions: [produceVideo, logoReveal] })
 const PORT      = Number(process.env.PORT ?? 3000)
 const INNGEST   = 'http://localhost:8288'
 const NIM_URL   = 'https://integrate.api.nvidia.com/v1'
-const NEMOTRON  = 'nvidia/llama-3.3-nemotron-super-49b-v1'
+const NEMOTRON  = 'nvidia/nemotron-3-nano-30b-a3b'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DASHBOARD = path.join(__dirname, 'ui', 'dashboard.html')
 
@@ -43,12 +46,7 @@ async function sendInngestEvent(name: string, data: unknown): Promise<string> {
   return result.ids?.[0] ?? 'unknown'
 }
 
-const NEMOTRON_SYSTEM = `You are a video production pipeline architect advising the Splicewerk team.
-Stack: NVIDIA NIM (Nemotron) for AI prompts and advice, Runway Gen-4 Turbo for cinematic video effects,
-Shotstack for cloud video assembly, sharp + ffmpeg for local processing, Inngest for pipeline orchestration.
-Current project: Autobahn Syndicate brand logo reveal — German automotive performance brand.
-Colors: #E02828 red, #F46E2C orange. Font: Montserrat.
-Be direct, specific, and actionable.`
+const NEMOTRON_SYSTEM = `Autobahn Syndicate's Video Production AI. User Inputs: Media (clips/images) + Plain Language Instructions. Output: Optimized EDL. Brand Guidelines: Colors #E02828 & #F46E2C, Montserrat Font. Prioritize Dynamic, High-Performance Aesthetic. Execute via Splicewerk Pipeline (ffmpeg, Runway Gen-4, Shotstack).`
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
@@ -86,8 +84,18 @@ const server = createServer(async (req, res) => {
     return json(res, { id })
   }
 
-  // Recent Inngest runs (local dev server uses GraphQL)
+  // Recent Inngest runs (DB first, fallback to Inngest GraphQL)
   if (url === '/api/runs') {
+    try {
+      const rows = await getRecentRuns(10)
+      if (rows.length > 0) {
+        return json(res, { runs: rows.map(r => ({ id: r.run_id, functionId: r.function_id, status: r.status, startedAt: r.started_at, endedAt: r.ended_at })) })
+      }
+    } catch {
+      // fall through to Inngest GraphQL
+    }
+
+    // Fallback: Inngest GraphQL (local dev before any DB runs exist)
     try {
       const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
       const gql = {
@@ -128,7 +136,7 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // Nemotron chat
+  // Nemotron chat — SSE streaming
   if (url === '/api/nemotron' && req.method === 'POST') {
     const body  = await readBody(req) as Record<string, unknown>
     const message = String(body.message ?? '')
@@ -143,8 +151,90 @@ const server = createServer(async (req, res) => {
       { role: 'user' as const, content: message },
     ]
 
-    const result = await callLLM(messages, { model: NEMOTRON, temperature: 0.4, maxTokens: 800 }, NIM_URL, `Bearer ${apiKey}`)
-    return json(res, { reply: result.ok ? result.value : `Error: ${result.error}` })
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Expose-Headers': 'Content-Type',
+    })
+
+    const sendEvent = (event: string, data: string) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+
+    const startTime = Date.now()
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+      const nimRes = await fetch(`${NIM_URL}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: NEMOTRON, messages, stream: true, temperature: 0.4, max_tokens: 800 }),
+      })
+
+      if (!nimRes.ok || !nimRes.body) {
+        sendEvent('error', `NIM error: HTTP ${nimRes.status}`)
+        res.end()
+        return
+      }
+
+      const reader = nimRes.body.getReader()
+      req.on('close', () => void reader.cancel().catch(() => {}))
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let fullContent = ''
+      let fullThinking = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const data = trimmed.slice(5).trim()
+          if (data === '[DONE]') continue
+          try {
+            const chunk = JSON.parse(data)
+            const delta = chunk.choices?.[0]?.delta
+            if (!delta) continue
+            if (delta.reasoning_content) {
+              fullThinking += delta.reasoning_content
+              sendEvent('thinking', delta.reasoning_content)
+            }
+            if (delta.content) {
+              fullContent += delta.content
+              sendEvent('token', delta.content)
+            }
+          } catch { /* skip malformed chunks */ }
+        }
+      }
+
+      const latency_ms = Date.now() - startTime
+      // Approximate token count: NIM streaming doesn't always include a usage chunk,
+      // so we estimate from character count (avg ~4 chars/token for English).
+      const approxTokens = Math.round((fullContent.length + fullThinking.length) / 4)
+      sendEvent('done', JSON.stringify({ latency_ms, tokens: approxTokens }))
+      void logPrompt({
+        source: 'ui-chat',
+        model: NEMOTRON,
+        provider: 'nim',
+        messages_in: messages,
+        response_out: fullContent || fullThinking,
+        latency_ms,
+        metadata: { historyLength: history.length },
+      }).catch(err => console.warn('[DB] logPrompt (ui-chat) failed:', err))
+    } catch (err) {
+      sendEvent('error', err instanceof Error ? err.message : String(err))
+    }
+
+    res.end()
+    return
   }
 
   // Service credits status
@@ -204,6 +294,145 @@ const server = createServer(async (req, res) => {
         },
       ]
     })
+  }
+
+  // Cost ledger — recent run costs from DB
+  if (url === '/api/costs') {
+    try {
+      const runId = new URL(url, 'http://localhost').searchParams.get('runId') ?? undefined
+      const costs = runId ? await getRunCosts(runId) : []
+      return json(res, { costs })
+    } catch {
+      return json(res, { costs: [] })
+    }
+  }
+
+  // Cost summary — aggregated totals from run_costs view
+  if (url === '/api/costs/summary') {
+    try {
+      const summary = await getRunCostsSummary(20)
+      return json(res, { summary })
+    } catch {
+      return json(res, { summary: [] })
+    }
+  }
+
+  // Upload assets for video production
+  if (url === '/api/upload' && req.method === 'POST') {
+    let sessionDir = ''
+    const files: string[] = []
+
+    await new Promise<void>((resolve, reject) => {
+      const bb = busboy({ headers: req.headers })
+      bb.on('field', (name, value) => {
+        if (name === 'existingSessionDir' && value.startsWith('projects/uploads-')) {
+          sessionDir = value
+        }
+      })
+      bb.on('file', (_field, stream, info) => {
+        // sessionDir may still be empty here if field arrives after file;
+        // busboy emits fields before files in practice, but we set rawDir lazily
+        if (!sessionDir) sessionDir = `projects/uploads-${Date.now()}`
+        const rawDir = `${sessionDir}/raw`
+        mkdirSync(rawDir, { recursive: true })
+        const { filename } = info
+        const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_')
+        files.push(safeName)
+        const dest = `${rawDir}/${safeName}`
+        const writeStream = createWriteStream(dest)
+        stream.pipe(writeStream)
+        writeStream.on('error', reject)
+      })
+      bb.on('close', resolve)
+      bb.on('error', reject)
+      req.pipe(bb)
+    })
+
+    if (!sessionDir) sessionDir = `projects/uploads-${Date.now()}`
+    const rawDir = `${sessionDir}/raw`
+    await fs.mkdir(rawDir, { recursive: true })
+    return json(res, { sessionDir, rawDir, files })
+  }
+
+  // Trigger video production pipeline
+  if (url === '/api/produce' && req.method === 'POST') {
+    const body = await readBody(req) as Record<string, unknown>
+    const sessionDir = String(body.sessionDir ?? '')
+    const projectName = String(body.projectName ?? `production-${Date.now()}`)
+    const formats = Array.isArray(body.formats) ? body.formats as string[] : ['youtube']
+    const dryRun = body.dryRun === true
+    let prompt = String(body.prompt ?? '')
+
+    // Prepend intro context if logo reveal exists
+    try {
+      await fs.access('projects/cinematic-intro/logo-reveal.mp4')
+      prompt = `A pre-rendered brand intro video is available at: projects/cinematic-intro/logo-reveal.mp4. Include it as the very first segment of the timeline.\n\n${prompt}`
+    } catch { /* no intro available */ }
+
+    const id = await sendInngestEvent('video/production-requested', {
+      prompt,
+      assetsDir: `${sessionDir}/raw`,
+      formats,
+      projectName,
+      dryRun,
+    })
+
+    return json(res, { id, sessionDir, projectName })
+  }
+
+  // Serve local project output files (videos, images)
+  if (url.startsWith('/media/projects/')) {
+    const filePath = url.replace('/media/', '')
+    try {
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+      const mimeTypes: Record<string, string> = {
+        mp4: 'video/mp4', mov: 'video/quicktime', jpg: 'image/jpeg',
+        jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp',
+      }
+      const mime = mimeTypes[ext] ?? 'application/octet-stream'
+      const stat = await fs.stat(filePath)
+      const range = req.headers.range
+
+      if (range && mime.startsWith('video/')) {
+        const parts = range.replace(/bytes=/, '').split('-')
+        const start = parseInt(parts[0]!, 10)
+        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1
+        const chunkSize = end - start + 1
+        const fileStream = (await import('node:fs')).createReadStream(filePath, { start, end })
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': mime,
+        })
+        fileStream.pipe(res)
+      } else {
+        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size, 'Accept-Ranges': 'bytes' })
+        const fileStream = (await import('node:fs')).createReadStream(filePath)
+        fileStream.pipe(res)
+      }
+    } catch {
+      res.writeHead(404)
+      res.end('Not found')
+    }
+    return
+  }
+
+  // Single run detail — run record + costs + prompt logs
+  const runDetailMatch = url.match(/^\/api\/runs\/([^?]+)$/)
+  if (runDetailMatch && req.method === 'GET') {
+    const runId = runDetailMatch[1]!
+    try {
+      const [allRuns, costs, prompts] = await Promise.all([
+        getRecentRuns(50),
+        getRunCosts(runId),
+        getPromptLogs(20, runId),
+      ])
+      const run = allRuns.find(r => r.run_id === runId) ?? null
+      return json(res, { run, costs, prompts })
+    } catch {
+      return json(res, { run: null, costs: [], prompts: [] })
+    }
   }
 
   res.writeHead(404)

@@ -2,6 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { AssetManifest } from '../edl/types.js'
 import { callLLM, generateEDL } from './llm.js'
 
+// Prevent logPrompt from making real Supabase fetch calls in tests
+vi.mock('@splicewerk/db', () => ({
+  logPrompt: vi.fn().mockResolvedValue(undefined),
+  upsertRun: vi.fn().mockResolvedValue(undefined),
+  updateRunStatus: vi.fn().mockResolvedValue(undefined),
+  logCost: vi.fn().mockResolvedValue(undefined),
+}))
+
 // ─── Fixtures ───
 
 const mockEDL = {
@@ -43,13 +51,14 @@ const mockAssetManifest: AssetManifest = {
 
 // ─── Helpers ───
 
-function makeOkFetch(content: string) {
+function makeOkFetch(content: string, totalTokens = 150) {
   return vi.fn().mockResolvedValue({
     ok: true,
     status: 200,
     statusText: 'OK',
     json: async () => ({
       choices: [{ message: { content } }],
+      usage: { total_tokens: totalTokens },
     }),
   })
 }
@@ -100,6 +109,27 @@ describe('callLLM', () => {
     if (result.ok) {
       expect(result.value).toBe('generated content')
     }
+  })
+
+  it('returns tokens from usage.total_tokens', async () => {
+    global.fetch = makeOkFetch('response', 420) as unknown as typeof fetch
+
+    const result = await callLLM([{ role: 'user', content: 'hi' }])
+
+    expect(result.tokens).toBe(420)
+  })
+
+  it('returns tokens: 0 when usage is absent', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ choices: [{ message: { content: 'hi' } }] }), // no usage field
+    }) as unknown as typeof fetch
+
+    const result = await callLLM([{ role: 'user', content: 'hi' }])
+
+    expect(result.tokens).toBe(0)
   })
 
   it('retries 3 times on 503 before returning { ok: false }', async () => {
@@ -153,7 +183,36 @@ describe('callLLM', () => {
     const fourthCallBody = JSON.parse(
       (fetchMock.mock.calls[3] as [string, RequestInit])[1].body as string
     ) as Record<string, unknown>
-    expect(fourthCallBody.model).toBe('nemotron-3-nano')
+    expect(fourthCallBody.model).toBe('nemotron-3-nano:4b')
+  })
+
+  it('uses ollama provider when NIM fails and Ollama succeeds', async () => {
+    let callCount = 0
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      callCount++
+      // First 3 calls go to NIM and fail; subsequent calls (Ollama) succeed
+      const isNim = (url as string).includes('integrate.api.nvidia.com')
+      if (isNim) {
+        return Promise.resolve({ ok: false, status: 503, statusText: 'Service Unavailable', json: async () => ({}) })
+      }
+      return Promise.resolve({
+        ok: true, status: 200, statusText: 'OK',
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify(mockEDL) } }],
+          usage: { total_tokens: 300 },
+        }),
+      })
+    }) as unknown as typeof fetch
+
+    const promise = generateEDL('make a video', mockAssetManifest)
+    await vi.runAllTimersAsync()
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    // Verify the fallback (Ollama) call used the local base URL
+    const calls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls as [string, unknown][]
+    const ollamaCall = calls.find(([url]) => url.includes('localhost'))
+    expect(ollamaCall).toBeDefined()
   })
 })
 

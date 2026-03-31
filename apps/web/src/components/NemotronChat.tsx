@@ -8,11 +8,29 @@ type Message = {
   id: string
   role: Role
   content: string
+  thinking?: string
   timestamp: Date
 }
 
 function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+// Keep history within ~3000 tokens (rough: 4 chars ≈ 1 token).
+// Always preserves the most recent turns.
+function truncateHistory(
+  history: { role: string; content: string }[],
+  maxTokens = 3000
+): { role: string; content: string }[] {
+  let tokens = 0
+  const result: { role: string; content: string }[] = []
+  for (const msg of [...history].reverse()) {
+    const size = msg.content.length / 4
+    if (tokens + size > maxTokens) break
+    result.unshift(msg)
+    tokens += size
+  }
+  return result
 }
 
 let messageCounter = 0
@@ -32,16 +50,15 @@ export function NemotronChat() {
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [streamingId, setStreamingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  // Auto-scroll to bottom when messages change
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
-  // Auto-resize textarea
   function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setInput(e.target.value)
     const el = textareaRef.current
@@ -62,44 +79,76 @@ export function NemotronChat() {
       timestamp: new Date(),
     }
 
-    setMessages((prev) => [...prev, userMessage])
+    // Capture and truncate history before adding new messages
+    const historySnapshot = truncateHistory(
+      messages.map(m => ({ role: m.role, content: m.content }))
+    )
+
+    setMessages(prev => [...prev, userMessage])
     setInput('')
     setError(null)
     setLoading(true)
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
-    // Reset textarea height
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-    }
+    // Add streaming placeholder
+    const assistantId = createId()
+    setStreamingId(assistantId)
+    setMessages(prev => [...prev, {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      thinking: undefined,
+      timestamp: new Date(),
+    }])
+
+    const updateMsg = (updater: (m: Message) => Message) =>
+      setMessages(prev => prev.map(m => m.id === assistantId ? updater(m) : m))
 
     try {
       const res = await fetch('/api/nemotron', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [
-            ...messages.map((m) => ({ role: m.role, content: m.content })),
-            { role: 'user', content: text },
-          ],
-        }),
+        body: JSON.stringify({ message: text, history: historySnapshot }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      const reply = data.content ?? data.message ?? data.response ?? 'No response'
+      if (!res.body) throw new Error('No response body')
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: createId(),
-          role: 'assistant',
-          content: reply,
-          timestamp: new Date(),
-        },
-      ])
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let currentEvent = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            currentEvent = line.slice(6).trim()
+          } else if (line.startsWith('data:')) {
+            const data = JSON.parse(line.slice(5).trim()) as string
+            if (currentEvent === 'thinking') {
+              updateMsg(m => ({ ...m, thinking: (m.thinking ?? '') + data }))
+            } else if (currentEvent === 'token') {
+              updateMsg(m => ({ ...m, content: m.content + data }))
+            } else if (currentEvent === 'error') {
+              setError(data)
+            }
+            currentEvent = ''
+          }
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Request failed')
+      // Remove empty placeholder on hard error
+      setMessages(prev => prev.filter(m => m.id !== assistantId || m.content !== ''))
     } finally {
       setLoading(false)
+      setStreamingId(null)
     }
   }
 
@@ -109,6 +158,10 @@ export function NemotronChat() {
       sendMessage()
     }
   }
+
+  // Show typing dots only before first token arrives
+  const lastMsg = messages[messages.length - 1]
+  const showTypingDots = loading && lastMsg?.id === streamingId && lastMsg?.content === '' && !lastMsg?.thinking
 
   return (
     <section className="bg-card border border-border rounded-lg flex flex-col h-full min-h-[600px] xl:min-h-0 xl:h-[calc(100vh-8rem)] sticky top-20">
@@ -135,7 +188,27 @@ export function NemotronChat() {
                   : 'bg-brand-orange/10 border border-brand-orange/20 text-text-primary'
               }`}
             >
-              <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+              {/* Thinking section */}
+              {msg.thinking && (
+                <details className="mb-2">
+                  <summary className="text-xs cursor-pointer text-brand-orange/50 hover:text-brand-orange/80 transition-colors select-none">
+                    {loading && msg.id === streamingId && !msg.content ? 'Thinking...' : 'Thought process'}
+                  </summary>
+                  <p className="mt-1.5 pl-2 border-l border-brand-orange/20 text-xs text-text-subtle whitespace-pre-wrap break-words leading-relaxed">
+                    {msg.thinking}
+                  </p>
+                </details>
+              )}
+
+              {/* Response content */}
+              <p className="whitespace-pre-wrap break-words">
+                {msg.content}
+                {/* Streaming cursor */}
+                {loading && msg.id === streamingId && msg.content && (
+                  <span className="inline-block w-1.5 h-3.5 bg-brand-orange/70 animate-pulse ml-0.5 align-middle rounded-sm" />
+                )}
+              </p>
+
               <p
                 className={`text-xs mt-1.5 ${
                   msg.role === 'user' ? 'text-brand-red/60 text-right' : 'text-brand-orange/60'
@@ -147,8 +220,8 @@ export function NemotronChat() {
           </div>
         ))}
 
-        {/* Typing indicator */}
-        {loading && (
+        {/* Typing indicator — only before first token */}
+        {showTypingDots && (
           <div className="flex justify-start">
             <div className="bg-brand-orange/10 border border-brand-orange/20 rounded-lg px-3.5 py-2.5">
               <div className="flex gap-1.5 items-center h-4">
@@ -165,8 +238,8 @@ export function NemotronChat() {
 
       {/* Error */}
       {error && (
-        <div className="px-4 pb-2">
-          <p className="text-xs text-brand-red">{error}</p>
+        <div className="mx-4 mb-2 px-3 py-2 rounded bg-brand-red/15 border border-brand-red/40">
+          <p className="text-xs text-brand-red font-medium">{error}</p>
         </div>
       )}
 

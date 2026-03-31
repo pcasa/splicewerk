@@ -118,9 +118,7 @@ Step 7: shotstack-render        → Shotstack assembles video + audio
 Step 8: burn-tagline            → sharp SVG→PNG overlay + ffmpeg fade-in/out
 ```
 
-⚠️ **Pre-deploy fix required:** Step 5 uses a blocking 5-min poll loop inside
-one `step.run()`. Must be refactored to `step.sleep()` between polls before
-deploying to Vercel/Railway (serverless timeout issue).
+✅ **Runway polling** refactored to durable `step.sleep()` + `step.run()` per poll — safe for serverless deployment.
 
 ---
 
@@ -223,6 +221,8 @@ INNGEST_DEV=1
 
 # AI Services
 NVIDIA_API_KEY=          # NVIDIA NIM — Nemotron models
+LLM_MODEL=               # Override EDL generation model (default: nvidia/llama-3.3-nemotron-super-49b-v1)
+LLM_MAX_RETRIES=         # Override NIM/Ollama retry limit per call (default: 3)
 RUNWAY_API_KEY=          # Runway Gen-4 Turbo
 SHOTSTACK_API_KEY=       # Shotstack Edit API
 ELEVENLABS_API_KEY=      # ElevenLabs SFX

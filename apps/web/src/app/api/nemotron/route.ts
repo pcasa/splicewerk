@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 
 const BACKEND = 'http://localhost:3000'
 
@@ -10,10 +10,19 @@ export async function POST(req: NextRequest) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-    const data = await res.json()
-    return NextResponse.json(data, { status: res.status })
+    return new Response(res.body, {
+      status: res.status,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Proxy error'
-    return NextResponse.json({ error: message }, { status: 502 })
+    return new Response(
+      `event: error\ndata: ${JSON.stringify(message)}\n\n`,
+      { status: 502, headers: { 'Content-Type': 'text/event-stream' } }
+    )
   }
 }

@@ -61,7 +61,7 @@ export interface TimelineSegment {
     | "clip"
     | "transition"
     | "generated";
-  processor: "ffmpeg" | "runway" | "elevenlabs";
+  processor?: "ffmpeg" | "runway" | "elevenlabs";
   source?: string;
   sources?: { source: string; trim?: string }[];
   operation?: string;

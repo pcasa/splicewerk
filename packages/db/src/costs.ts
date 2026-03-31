@@ -24,3 +24,21 @@ export async function getRunCosts(runId: string): Promise<CostEntry[]> {
   if (error) throw error
   return (data ?? []) as CostEntry[]
 }
+
+export type RunCostSummary = {
+  run_id: string
+  total_usd: number
+  by_service: Record<string, number>
+  retry_count: number
+}
+
+export async function getRunCostsSummary(limit = 20): Promise<RunCostSummary[]> {
+  const { data, error } = await supabase
+    .from('run_costs')
+    .select('*')
+    .order('run_id', { ascending: false })
+    .limit(limit)
+
+  if (error) throw error
+  return (data ?? []) as RunCostSummary[]
+}

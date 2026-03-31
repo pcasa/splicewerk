@@ -2,9 +2,10 @@ import { supabase } from './client.js'
 
 export type PromptLogEntry = {
   run_id?: string
-  source: 'ui-chat' | 'pipeline' | 'pipeline-baseline'
+  source: 'ui-chat' | 'pipeline' | 'pipeline-baseline' | 'generate-edl'
   step?: string
   model: string
+  provider?: 'nim' | 'ollama'
   messages_in: Array<{ role: string; content: string | unknown[] }>
   response_out?: string
   tokens_used?: number
