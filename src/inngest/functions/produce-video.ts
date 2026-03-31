@@ -1,8 +1,8 @@
 import * as fs from 'node:fs/promises'
 import { inngest } from '../client.js'
 import { catalogAssets } from '../../services/asset-catalog.js'
-import { generateEDL } from '../../services/llm.js'
-import { trimClip, loadFormatPresets } from '../../services/ffmpeg.js'
+import { generateEDL, validateVideoOutput } from '../../services/llm.js'
+import { trimClip, loadFormatPresets, extractFrames } from '../../services/ffmpeg.js'
 import { imageToVideo, textToVideo } from '../../services/runway.js'
 import { uploadFile, assembleClips } from '../../services/shotstack.js'
 import type { AssemblySegment, AssemblyOptions } from '../../services/shotstack.js'
@@ -113,6 +113,12 @@ export async function produceVideoPipeline(
       const assetByFilename = new Map(
         manifest.files.map((f) => [f.filename.toLowerCase(), f.path])
       )
+      const assetByNumber = new Map<string, string>()
+      for (const f of manifest.files) {
+        // Normalise the key so that "CAR‑CLIP‑01.MOV" and "car-clip-01.mov" map to the same entry
+        const key = f.filename.toLowerCase()          // <-- force lower‑case (or any normalisation you prefer)
+        assetByNumber.set(key, f.path)                // store with the normalised key
+      }
       const resolveSource = (source: string): string => {
         if (source.startsWith('/')) return source
         return assetByFilename.get(source.toLowerCase()) ?? source
@@ -230,11 +236,43 @@ export async function produceVideoPipeline(
     }
   })
 
+  // Step 10: Validate output — AI reviews frames against user description
+  const validation = await step.run('validate-output', async () => {
+    const firstOutput = outputs[0]
+    if (!firstOutput) return null
+
+    const framesDir = `${outputDir}/validation-frames`
+    const framesResult = await extractFrames(firstOutput, 2, framesDir)
+    if (!framesResult.ok) {
+      console.warn(`[Validation] Frame extraction failed: ${framesResult.error}`)
+      return null
+    }
+
+    const validationResult = await validateVideoOutput(framesResult.value, prompt)
+    if (!validationResult.ok) {
+      console.warn(`[Validation] Vision model failed: ${validationResult.error}`)
+      return null
+    }
+
+    // Save result to local JSON file
+    const validationPath = `projects/${projectName}/validation-${Date.now()}.json`
+    const payload = { ...validationResult.value, projectName, timestamp: new Date().toISOString() }
+    await fs.mkdir(`projects/${projectName}`, { recursive: true })
+    await fs.writeFile(validationPath, JSON.stringify(payload, null, 2))
+    console.log(`[Validation] Result saved to ${validationPath}`)
+
+    // Clean up extracted frames
+    await fs.rm(framesDir, { recursive: true, force: true })
+
+    return validationResult.value
+  })
+
   return {
     projectName,
     edl,
     masterPath: null,  // assembled in Shotstack cloud, no local master
     outputs,
+    validation,
     dryRun: false,
   }
 }

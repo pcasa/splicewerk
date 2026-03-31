@@ -158,8 +158,7 @@ export async function generateSFX(
 }
 
 /**
- * Generate music from a text prompt.
- * Uses the sound-generation endpoint as a stand-in for music generation.
+ * Generate music from a text prompt using the ElevenLabs Music Generation API.
  * Returns a Result containing the local file path of the downloaded audio.
  */
 export async function generateMusic(
@@ -175,16 +174,15 @@ export async function generateMusic(
 
   let response: Response
   try {
-    response = await fetch(`${baseUrl}/v1/sound-generation`, {
+    response = await fetch(`${baseUrl}/v1/music`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'xi-api-key': apiKey,
       },
       body: JSON.stringify({
-        text: prompt,
+        prompt,
         duration_seconds: durationSeconds,
-        prompt_influence: 0.3,
       }),
     })
   } catch (err) {
@@ -193,10 +191,14 @@ export async function generateMusic(
   }
 
   if (!response.ok) {
-    return {
-      ok: false,
-      error: `ElevenLabs API error: HTTP ${response.status}`,
-    }
+    let detail = response.statusText
+    try {
+      const body = await response.json() as { detail?: { status?: string; message?: string } | string }
+      const d = body.detail
+      if (d && typeof d === 'object' && d.message) detail = `${d.status ?? ''}: ${d.message}`
+      else if (typeof d === 'string') detail = d
+    } catch { /* ignore parse errors */ }
+    return { ok: false, error: `ElevenLabs HTTP ${response.status} — ${detail}` }
   }
 
   const buffer = await response.arrayBuffer()

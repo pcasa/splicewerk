@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type sharp from 'sharp'
 
 // ─── Mocks ───
 
@@ -78,7 +79,7 @@ describe('extractFrame', () => {
 
     const calls = mockExecFile.mock.calls
     expect(calls.length).toBe(1)
-    const [file, args] = calls[0] as [string, string[]]
+    const [file, args] = calls[0] as unknown as [string, string[]]
     expect(file).toBe('ffmpeg')
     expect(args).toContain('-ss')
     expect(args).toContain('5.5')

@@ -5,6 +5,14 @@ import type { EDL, AssetManifest } from '../edl/types.js'
 
 type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 
+export type VideoValidation = {
+  verdict: 'pass' | 'needs-work'
+  summary: string
+  issues: string[]
+  promptFix?: string
+  runwayPromptFix?: string
+}
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
@@ -31,10 +39,9 @@ const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY ?? ''
 const NIM_BASE_URL = 'https://integrate.api.nvidia.com/v1'
 const DEFAULT_MODEL = process.env.LLM_MODEL ?? 'meta/llama-3.3-70b-instruct'
 
-// Nemotron models on NIM — used for the AI-to-AI pipeline (Nemotron → Runway)
-// nemotron-nano-12b-v2-vl: vision-language, can analyze logo images directly
-// nemotron-3-nano-30b-a3b: text-only but lightweight and fast
-const NEMOTRON_VISION_MODEL = 'nvidia/nemotron-nano-12b-v2-vl'
+// Vision model: Llama 4 Maverick (MoE 17B/128E) — multi-image, 1M context, best VLM on NIM
+// Text model: Nemotron 3 Nano — lightweight, fast, text-only
+const NEMOTRON_VISION_MODEL = 'meta/llama-4-maverick-17b-128e-instruct'
 const NEMOTRON_TEXT_MODEL   = 'nvidia/nemotron-3-nano-30b-a3b'
 
 // Fallback: local Ollama (no auth required)
@@ -250,7 +257,16 @@ ${EDL_SCHEMA_DESCRIPTION}
 Available Assets:
 ${assetList}
 ${brandingSection}
-IMPORTANT: Output ONLY valid JSON matching the EDL schema above. Do not include any markdown code fences, explanations, or additional text. The response must be parseable by JSON.parse() directly.`
+CRITICAL RULES:
+1. Every timeline segment MUST have a "processor" field. Use exactly:
+   - "ffmpeg" for video clips, video trimming, stabilization, or color grading
+   - "runway" for images (image-to-video), text title cards, or AI-generated scenes
+   - "elevenlabs" for audio/SFX generation only
+Do not use variations (e.g., "FFmpeg", "runway-gen", "Runway").
+2. Use EXACT filenames from the Available Assets list above. Do NOT invent or guess filenames.
+3. For Runway image segments, "durationSeconds" must be 5 or 10 (round to nearest).
+4. For ffmpeg video segments with "operation": "stabilize", include "processor": "ffmpeg".
+5. Output ONLY valid JSON. No markdown fences, no explanations. Must be parseable by JSON.parse() directly.`
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -329,9 +345,10 @@ export async function generateCinematicPrompt(
 ): Promise<Result<string>> {
   const nimAuth = NVIDIA_API_KEY ? `Bearer ${NVIDIA_API_KEY}` : undefined
 
-  const systemPrompt = `You are a creative director specializing in cinematic brand video production.
+  const systemPrompt = `You are a creative director specializing in cinematic brand video production for high-performance automotive brands.
 Write a Runway Gen-4 image-to-video prompt for a logo reveal on a pure black background.
-The prompt must describe: cinematic effects (light rays, sparks, shimmer, embers, fog), color palette, camera movement, and overall feel.
+The prompt must describe: cinematic effects (high-speed sparks, metallic sheen, dramatic lighting, embers, fog), color palette inspired by the logo, dynamic camera movement (fast rotations, sweeping motions), and a high-octane overall feel.
+Style references: high-performance car commercials, Fast & Furious montages.
 Static locked-off camera — no zoom, no push-in. Wide shot that holds the full logo in frame.
 Keep it under 900 characters. Output ONLY the prompt text — no explanation, no preamble.`
 
@@ -392,8 +409,9 @@ that animates it with spectacular cinematic effects matching the brand's identit
 Industry: ${brand.industry ?? 'automotive performance'}
 Brand Colors: ${colorDesc}
 Tagline: ${brand.tagline ?? 'none'}
-Mood: ${brand.mood ?? 'cinematic, dramatic, high-budget'}
-Write a Runway Gen-4 prompt that animates this logo on a pure black background with spectacular cinematic effects.`,
+Mood: ${brand.mood ?? 'high-energy, performance-driven, cinematic'}
+Write a Runway Gen-4 prompt that animates this logo on a pure black background with spectacular cinematic effects matching the brand's high-performance identity.
+Incorporate elements like speed, power, and precision. Style references: high-performance car commercials, Fast & Furious montages.`,
     },
   ]
 
@@ -409,6 +427,143 @@ Write a Runway Gen-4 prompt that animates this logo on a pure black background w
   }
 
   return callLLM(textMessages, { model: FALLBACK_MODEL, temperature: 0.9, maxTokens: 512 }, OLLAMA_BASE_URL)
+}
+
+// ─── Prompt Logging ───
+
+/** Stub: will write to Supabase prompt_logs table in Phase 5. */
+export async function logPrompt(entry: {
+  source: string
+  model: string
+  messages_in?: unknown
+  response_out?: string
+  run_id?: string
+  metadata?: Record<string, unknown>
+}): Promise<void> {
+  console.log(`[logPrompt] source=${entry.source} model=${entry.model} run_id=${entry.run_id ?? 'n/a'}`)
+}
+
+// ─── Video Validation ───
+
+/**
+ * Uses the NIM vision model to validate that generated video frames match the
+ * original user description. Returns structured feedback as VideoValidation.
+ *
+ * Accepts up to 5 frame paths; if more are given, evenly samples 5 frames
+ * at 0%, 25%, 50%, 75%, and 100% of the array.
+ */
+export async function validateVideoOutput(
+  framePaths: string[],
+  userPrompt: string,
+  runId?: string
+): Promise<Result<VideoValidation>> {
+  const nimAuth = NVIDIA_API_KEY ? `Bearer ${NVIDIA_API_KEY}` : undefined
+
+  // ── Sample up to 5 frames evenly ──────────────────────────────────────────
+  let selectedPaths: string[]
+  if (framePaths.length <= 5) {
+    selectedPaths = framePaths
+  } else {
+    const last = framePaths.length - 1
+    selectedPaths = [0, 0.25, 0.5, 0.75, 1].map((pct) => {
+      const idx = Math.round(pct * last)
+      return framePaths[idx]
+    })
+  }
+
+  // ── Read frames as base64 ─────────────────────────────────────────────────
+  let imageDataUrls: string[]
+  try {
+    const fs = await import('node:fs/promises')
+    imageDataUrls = await Promise.all(
+      selectedPaths.map(async (p) => {
+        const buf = await fs.readFile(p)
+        return `data:image/jpeg;base64,${buf.toString('base64')}`
+      })
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: `Failed to read frame files: ${msg}` }
+  }
+
+  // ── Build multimodal message ──────────────────────────────────────────────
+  const systemPrompt = `You are a video production expert analyzing the consistency between a generated video and its original description.
+Given frames from the final video and the user's original description, provide structured feedback in JSON format.
+Output MUST be valid JSON matching exactly this type:
+{"verdict":"pass"|"needs-work","summary":"string","issues":["string"],"promptFix":"string (optional)","runwayPromptFix":"string (optional)"}
+Be objective. Focus on visual elements, composition, pacing, and how well the video matches the description.
+Output ONLY the JSON object. No markdown fences, no explanation.`
+
+  const imageBlocks = imageDataUrls.map((url) => ({
+    type: 'image_url' as const,
+    image_url: { url },
+  }))
+
+  const visionMessages = [
+    { role: 'system' as const, content: systemPrompt },
+    {
+      role: 'user' as const,
+      content: [
+        ...imageBlocks,
+        {
+          type: 'text' as const,
+          text: `Original description: ${userPrompt}\nAnalyze how well these video frames match the description. Return structured JSON feedback.`,
+        },
+      ] as unknown as string,
+    },
+  ]
+
+  // ── Call vision model ─────────────────────────────────────────────────────
+  const result = await callLLM(
+    visionMessages,
+    { model: NEMOTRON_VISION_MODEL, temperature: 0.3, maxTokens: 1024 },
+    NIM_BASE_URL,
+    nimAuth
+  )
+
+  if (!result.ok) {
+    return { ok: false, error: `LLM call failed: ${result.error}` }
+  }
+
+  // ── Parse JSON response ───────────────────────────────────────────────────
+  let raw = result.value.trim()
+  raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    await logPrompt({
+      source: 'video-validation',
+      model: NEMOTRON_VISION_MODEL,
+      response_out: result.value,
+      run_id: runId,
+    })
+    return { ok: false, error: `Failed to parse validation response as JSON: ${msg}` }
+  }
+
+  // ── Validate required fields ──────────────────────────────────────────────
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    !('verdict' in parsed) ||
+    !('summary' in parsed)
+  ) {
+    return { ok: false, error: 'Validation response missing required fields: verdict, summary' }
+  }
+
+  const validation = parsed as VideoValidation
+
+  // ── Log to prompt_logs ────────────────────────────────────────────────────
+  await logPrompt({
+    source: 'video-validation',
+    model: NEMOTRON_VISION_MODEL,
+    response_out: result.value,
+    run_id: runId,
+  })
+
+  return { ok: true, value: validation }
 }
 
 // ─── Helpers ───

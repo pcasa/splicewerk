@@ -1,9 +1,31 @@
+'use client'
+
+import { useState } from 'react'
 import { PipelineControls } from '@/components/PipelineControls'
 import { RecentRuns } from '@/components/RecentRuns'
 import { ServicesPanel } from '@/components/ServicesPanel'
 import { NemotronChat } from '@/components/NemotronChat'
+import { EnhanceFootagePanel } from '@/components/EnhanceFootagePanel'
+import { ProjectsPanel } from '@/components/ProjectsPanel'
+import { AdaptivePipelinePanel } from '@/components/AdaptivePipelinePanel'
+import { ValidationPanel } from '@/components/ValidationPanel'
+
+type Tab = 'pipeline' | 'validation'
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'pipeline',   label: 'Pipeline' },
+  { id: 'validation', label: 'Validation' },
+]
 
 export default function DashboardPage() {
+  const [activeTab, setActiveTab] = useState<Tab>('pipeline')
+  const [selectedProject, setSelectedProject] = useState<string>('')
+
+  const handleRunComplete = (sessionDirName: string) => {
+    setSelectedProject(sessionDirName)
+    setActiveTab('validation')
+  }
+
   return (
     <div className="flex flex-col min-h-screen">
       {/* Header */}
@@ -46,21 +68,62 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {/* Main layout */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-8">
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-          {/* Left column */}
-          <div className="xl:col-span-2 flex flex-col gap-6">
-            <PipelineControls />
-            <RecentRuns />
-            <ServicesPanel />
-          </div>
-
-          {/* Right column */}
-          <div className="xl:col-span-1">
-            <NemotronChat />
+      {/* Tab bar */}
+      <div className="border-b border-border bg-background/90 backdrop-blur-sm sticky top-14 z-40">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="flex items-center gap-1 -mb-px">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`
+                  px-4 py-3 text-xs font-semibold tracking-widest uppercase transition-colors border-b-2
+                  ${activeTab === tab.id
+                    ? 'border-brand-red text-text-primary'
+                    : 'border-transparent text-text-muted hover:text-text-primary'}
+                `}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
         </div>
+      </div>
+
+      {/* Main layout */}
+      <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-8">
+        {activeTab === 'pipeline' && (
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            {/* Left column */}
+            <div className="xl:col-span-2 flex flex-col gap-6">
+              <AdaptivePipelinePanel />
+              <EnhanceFootagePanel onRunComplete={handleRunComplete} />
+              <ProjectsPanel />
+              <PipelineControls />
+              <RecentRuns />
+              <ServicesPanel />
+            </div>
+
+            {/* Right column */}
+            <div className="xl:col-span-1">
+              <NemotronChat />
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'validation' && (
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            {/* Left column */}
+            <div className="xl:col-span-2 flex flex-col gap-6">
+              <ValidationPanel projectName={selectedProject} />
+            </div>
+
+            {/* Right column */}
+            <div className="xl:col-span-1">
+              <NemotronChat />
+            </div>
+          </div>
+        )}
       </main>
     </div>
   )

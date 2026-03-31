@@ -26,3 +26,21 @@ export type ProductionRequestedEvent = {
     dryRun?: boolean
   }
 }
+
+export type FootageEnhanceEvent = {
+  name: 'footage/enhance-requested'
+  data: {
+    inputVideoPath: string
+    projectDir: string
+    introVideoPath?: string
+    scrollingLines?: string[]
+    endCardTitle?: string
+    endCardStats?: string
+    fadeInSec?: number
+    fadeOutSec?: number
+    stabilization?: {
+      shakiness?: number
+      smoothing?: number
+    }
+  }
+}
