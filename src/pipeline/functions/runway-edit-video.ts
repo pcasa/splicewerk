@@ -4,7 +4,12 @@ import type { FunctionManifest, ExecuteFn } from '../types.js'
 export const manifest: FunctionManifest = {
   name: 'runwayEditVideo',
   description:
-    'Edit or stylize an existing video clip using Runway Gen-4 Aleph (video-to-video). Use for applying cinematic color grades, style transfers, atmospheric effects, or transforming footage aesthetics. ~25 Runway credits per 5-second clip.',
+    'Edit, stabilize, or stylize an existing video clip using Runway Gen-4 Aleph (video-to-video). ' +
+    'Preferred over stabilizeClip for severely shaky footage (car interiors, running, fast motion) — ' +
+    'Runway re-renders the clip with smooth camera motion rather than warping pixels. ' +
+    'Also use for: cinematic color grades, style transfers, atmospheric effects, transforming footage aesthetics. ' +
+    'For stabilization use prompt like: "smooth handheld camera, stabilized motion, cinematic". ' +
+    '~25 Runway credits per 5-second clip.',
   inputs: [
     {
       name: 'videoPath',

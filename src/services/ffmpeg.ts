@@ -493,7 +493,7 @@ async function isVidstabSupported(): Promise<boolean> {
 export async function stabilizeClip(
   input: string,
   output: string,
-  opts?: { smoothing?: number; shakiness?: number }
+  opts?: { smoothing?: number; shakiness?: number; maxZoom?: number }
 ): Promise<Result<string>> {
   log("info", "stabilizeClip", { input, output, opts });
 
@@ -504,29 +504,47 @@ export async function stabilizeClip(
 
   const trfPath = output + ".vidstab.trf";
 
+  // Sensible defaults: moderate shakiness detection, gentle smoothing.
+  // Aggressive smoothing (>15) forces large frame shifts that require heavy
+  // zoom compensation and degrade quality. Phone footage is better served
+  // by moderate smoothing that removes jitter without repositioning entire frames.
+  const shakiness = opts?.shakiness ?? 6
+  const smoothing = opts?.smoothing ?? 10
+  // optzoom=2: dynamic per-frame zoom that crops to remove black borders without
+  // upscaling — far better quality than either optzoom=0 (black bars) or
+  // optzoom=1 (full-video scale that over-zooms on one bad frame).
+  // maxZoom caps how much we're willing to crop in — 8% is imperceptible.
+  const maxZoom = opts?.maxZoom ?? 8
+
   // Pass 1 — motion detection
   const detectArgs = [
     "-y",
     "-i", input,
-    "-vf", `vidstabdetect=result=${trfPath}:shakiness=${opts?.shakiness ?? 5}:accuracy=15`,
+    "-vf", `vidstabdetect=result=${trfPath}:shakiness=${shakiness}:accuracy=15:stepsize=6`,
     "-f", "null", "-",
   ];
   const detectRes = await runFFmpeg(detectArgs);
   if (!detectRes.ok) return detectRes;
 
   // Pass 2 — stabilization transform
-  // optzoom=0: do NOT auto-zoom — auto-zoom upscales the frame to hide borders
-  // which causes visible pixelation on phone footage. Small black borders are
-  // far less noticeable than a soft/pixelated image.
+  // interpol=4: bicubic interpolation for sharp sub-pixel shifts (vs default bilinear)
+  // optzoom=2: dynamic optimal zoom, crops black borders without upscaling the image
+  // maxzoom: hard cap so a single bad frame can't force a massive crop
+  // unsharp after transform recovers the slight softness from pixel interpolation
+  const transformFilter = [
+    `vidstabtransform=input=${trfPath}:smoothing=${smoothing}:optzoom=2:maxzoom=${maxZoom}:interpol=4`,
+    `unsharp=5:5:0.5:3:3:0.0`,
+  ].join(',')
+
   const transformArgs = [
     "-y",
     "-i", input,
-    "-vf", `vidstabtransform=input=${trfPath}:smoothing=${opts?.smoothing ?? 5}:zoom=0:optzoom=0`,
+    "-vf", transformFilter,
     "-c:v", "libx264",
-    "-crf", "18",
-    "-preset", "fast",
+    "-crf", "17",
+    "-preset", "slow",   // slower preset = better compression at same quality
     "-pix_fmt", "yuv420p",
-    "-c:a", "aac",
+    "-c:a", "copy",      // copy audio stream unchanged — no re-encode artifacts
     output,
   ];
   const transformRes = await runFFmpeg(transformArgs);

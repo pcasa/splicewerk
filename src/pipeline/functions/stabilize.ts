@@ -4,14 +4,21 @@ import type { FunctionManifest, ExecuteFn } from '../types.js'
 
 export const manifest: FunctionManifest = {
   name: 'stabilizeClip',
-  description: 'Removes camera shake from shaky phone/handheld footage using two-pass vidstab. Always run this on raw phone footage before any other processing.',
+  description:
+    'Removes camera shake from handheld/phone footage using two-pass vidstab with bicubic interpolation and dynamic zoom cropping. ' +
+    'Good for mild-to-moderate shake (stationary filming, slow walking shots). ' +
+    'For severely shaky footage (fast motion, running, car interior bouncing) prefer runwayEditVideo — ' +
+    'Runway produces cinematic results where ffmpeg stabilization would degrade quality. ' +
+    'Default shakiness=6 and smoothing=10 work well for most phone footage. ' +
+    'Keep smoothing ≤15 — higher values force large frame shifts that hurt quality.',
   inputs: [
-    { name: 'videoPath', type: 'asset', description: 'Path to the raw input video file', required: true },
-    { name: 'shakiness', type: 'number', description: 'Shakiness detection sensitivity 1-10. Use 10 for phone walking footage.', required: false },
-    { name: 'smoothing', type: 'number', description: 'Smoothing radius in frames. Use 30 for heavy stabilization.', required: false },
+    { name: 'videoPath', type: 'asset', description: 'Asset name of the source video to stabilize.', required: true },
+    { name: 'shakiness', type: 'number', description: 'Motion detection sensitivity 1-10. Default: 6. Use 7-8 for very shaky footage. Avoid 9-10 — causes over-detection and quality loss.', required: false },
+    { name: 'smoothing', type: 'number', description: 'Smoothing radius in frames. Default: 10. Keep ≤15. Higher values require larger frame shifts that degrade quality.', required: false },
+    { name: 'maxZoom', type: 'number', description: 'Max zoom crop % to hide stabilization borders (1-15). Default: 8. Increase to 12 if black edges are visible.', required: false },
   ],
   outputs: [
-    { name: 'stabilized', description: 'Path to stabilized video file' },
+    { name: 'stabilized', description: 'Path to the stabilized video file.' },
   ],
   estimatedSeconds: 90,
 }
@@ -24,8 +31,9 @@ export const execute: ExecuteFn = async (inputs, assets, projectDir) => {
     videoPath,
     output,
     {
-      shakiness: (inputs.shakiness as number | undefined) ?? 10,
-      smoothing: (inputs.smoothing as number | undefined) ?? 30,
+      shakiness: (inputs.shakiness as number | undefined) ?? 6,
+      smoothing: (inputs.smoothing as number | undefined) ?? 10,
+      maxZoom: (inputs.maxZoom as number | undefined) ?? 8,
     }
   )
   if (!result.ok) throw new Error(`stabilizeClip failed: ${result.error}`)
