@@ -172,7 +172,7 @@ describe('produceVideo', () => {
     const mockStep = createMockStep()
     const mockEvent = createMockEvent({ assetsDir: '/my/assets' })
 
-    await produceVideoPipeline(mockEvent, mockStep, 'test-run-id')
+    await produceVideoPipeline(mockEvent, mockStep)
 
     expect(catalogAssets).toHaveBeenCalledWith('/my/assets')
   })
@@ -181,7 +181,7 @@ describe('produceVideo', () => {
     const mockStep = createMockStep()
     const mockEvent = createMockEvent({ prompt: 'Make a great video' })
 
-    await produceVideoPipeline(mockEvent, mockStep, 'test-run-id')
+    await produceVideoPipeline(mockEvent, mockStep)
 
     expect(generateEDL).toHaveBeenCalledWith('Make a great video', mockManifest)
   })
@@ -195,7 +195,7 @@ describe('produceVideo', () => {
     const mockStep = createMockStep()
     const mockEvent = createMockEvent()
 
-    await expect(produceVideoPipeline(mockEvent, mockStep, 'test-run-id')).rejects.toThrow(
+    await expect(produceVideoPipeline(mockEvent, mockStep)).rejects.toThrow(
       'Invalid EDL: missing required field "project"'
     )
   })
@@ -204,7 +204,7 @@ describe('produceVideo', () => {
     const mockStep = createMockStep()
     const mockEvent = createMockEvent({ dryRun: true })
 
-    const result = await produceVideoPipeline(mockEvent, mockStep, 'test-run-id')
+    const result = await produceVideoPipeline(mockEvent, mockStep)
 
     expect(result.dryRun).toBe(true)
     expect(result.edl).toEqual(mockEDL)
@@ -222,7 +222,7 @@ describe('produceVideo', () => {
       .mockResolvedValueOnce({ ok: true, value: 'output/instagram-reels/output.mp4' })
       .mockResolvedValueOnce({ ok: true, value: 'output/tiktok/output.mp4' })
 
-    await produceVideoPipeline(mockEvent, mockStep, 'test-run-id')
+    await produceVideoPipeline(mockEvent, mockStep)
 
     expect(assembleClips).toHaveBeenCalledTimes(3)
     expect(assembleClips).toHaveBeenCalledWith(
@@ -246,7 +246,7 @@ describe('produceVideo', () => {
     const mockStep = createMockStep()
     const mockEvent = createMockEvent({ projectName: 'my-project', formats: ['youtube'] })
 
-    const result = await produceVideoPipeline(mockEvent, mockStep, 'test-run-id')
+    const result = await produceVideoPipeline(mockEvent, mockStep)
 
     expect(result.projectName).toBe('my-project')
     expect(result.edl).toEqual(mockEDL)

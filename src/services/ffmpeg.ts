@@ -1054,3 +1054,53 @@ export async function generateEndCard(opts: EndCardOptions): Promise<Result<stri
     await rm(requestDir, { recursive: true, force: true }).catch(() => {});
   }
 }
+
+// ─── extractAudio ─────────────────────────────────────────────────────────────
+
+/**
+ * Extract the audio track from a video file to an MP3 or WAV file.
+ */
+export async function extractAudio(
+  videoPath: string,
+  outputPath: string,
+  format: 'mp3' | 'wav' = 'mp3'
+): Promise<Result<string>> {
+  const args = format === 'mp3'
+    ? ['-y', '-i', resolve(videoPath), '-vn', '-acodec', 'libmp3lame', '-q:a', '2', outputPath]
+    : ['-y', '-i', resolve(videoPath), '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', outputPath]
+  return runFFmpeg(args)
+}
+
+// ─── normalizeAudio ───────────────────────────────────────────────────────────
+
+/**
+ * Normalize audio loudness to -16 LUFS (streaming standard) using loudnorm filter.
+ */
+export async function normalizeAudio(
+  inputPath: string,
+  outputPath: string
+): Promise<Result<string>> {
+  const args = [
+    '-y', '-i', resolve(inputPath),
+    '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
+    outputPath,
+  ]
+  return runFFmpeg(args)
+}
+
+// ─── extractThumbnail ─────────────────────────────────────────────────────────
+
+/**
+ * Extract a single thumbnail frame from a video at the given timestamp (default: 1s).
+ */
+export async function extractThumbnail(
+  videoPath: string,
+  outputPath: string,
+  timestampSec = 1
+): Promise<Result<string>> {
+  const args = [
+    '-y', '-ss', String(timestampSec), '-i', resolve(videoPath),
+    '-frames:v', '1', '-q:v', '2', outputPath,
+  ]
+  return runFFmpeg(args)
+}

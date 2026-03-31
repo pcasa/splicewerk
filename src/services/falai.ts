@@ -123,3 +123,60 @@ export async function downloadFalVideo(url: string, outputPath: string): Promise
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
+
+// ─── Download Image Helper ────────────────────────────────────────────────────
+
+export async function downloadFalImage(url: string, outputPath: string): Promise<Result<string>> {
+  try {
+    await fs.mkdir(path.dirname(outputPath), { recursive: true })
+    const response = await fetch(url)
+    if (!response.ok) return { ok: false, error: `Download failed: ${response.status} ${response.statusText}` }
+    const buffer = await response.arrayBuffer()
+    await fs.writeFile(outputPath, Buffer.from(buffer))
+    return { ok: true, value: outputPath }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+// ─── Text to Image ────────────────────────────────────────────────────────────
+
+export type FalImageModel = 'fal-ai/flux/dev' | 'fal-ai/flux/schnell' | 'fal-ai/flux-pro/v1.1-ultra'
+
+export interface TextToImageInput {
+  model?: FalImageModel
+  prompt: string
+  width?: number
+  height?: number
+  numImages?: number
+}
+
+export interface FalImageOutput {
+  imageUrl: string
+  width?: number
+  height?: number
+}
+
+export async function textToImage(opts: TextToImageInput): Promise<Result<FalImageOutput>> {
+  const init = initClient()
+  if (!init.ok) return init
+
+  const model = opts.model ?? 'fal-ai/flux/dev'
+
+  try {
+    const result = await fal.subscribe(model, {
+      input: {
+        prompt: opts.prompt,
+        image_size: { width: opts.width ?? 1920, height: opts.height ?? 1080 },
+        num_images: opts.numImages ?? 1,
+      },
+    }) as { data: { images: Array<{ url: string; width?: number; height?: number }> } }
+
+    const image = result.data?.images?.[0]
+    if (!image?.url) return { ok: false, error: 'No image URL in fal.ai response' }
+
+    return { ok: true, value: { imageUrl: image.url, width: image.width, height: image.height } }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}

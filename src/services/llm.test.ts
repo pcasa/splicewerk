@@ -111,15 +111,16 @@ describe('callLLM', () => {
     }
   })
 
-  it('returns tokens from usage.total_tokens', async () => {
+  it('returns ok:true with response content when usage is present', async () => {
     global.fetch = makeOkFetch('response', 420) as unknown as typeof fetch
 
     const result = await callLLM([{ role: 'user', content: 'hi' }])
 
-    expect(result.tokens).toBe(420)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toBe('response')
   })
 
-  it('returns tokens: 0 when usage is absent', async () => {
+  it('returns ok:true when usage is absent', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -129,7 +130,8 @@ describe('callLLM', () => {
 
     const result = await callLLM([{ role: 'user', content: 'hi' }])
 
-    expect(result.tokens).toBe(0)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value).toBe('hi')
   })
 
   it('retries 3 times on 503 before returning { ok: false }', async () => {
