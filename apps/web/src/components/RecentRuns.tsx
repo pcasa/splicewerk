@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
+import { ValidationPanel } from './ValidationPanel'
 
 type RunStatus = 'Running' | 'Sleeping' | 'Completed' | 'Failed' | 'Cancelled'
 
@@ -222,6 +223,11 @@ export function RecentRuns() {
                               ))}
                             </div>
                           </div>
+                        )}
+
+                        {/* Validation recommendations */}
+                        {run.status === 'Completed' && (
+                          <ValidationPanel runId={run.id} />
                         )}
 
                         {/* No detail available */}
