@@ -14,7 +14,10 @@ type VideoValidation = {
 }
 
 interface Props {
-  projectName: string
+  /** Stable run ID — preferred over projectName */
+  runId?: string
+  /** Legacy: project directory name. Used only when runId is not provided. */
+  projectName?: string
 }
 
 function VerdictBadge({ verdict }: { verdict: VideoValidation['verdict'] }) {
@@ -134,37 +137,52 @@ function ValidationCard({ validation }: { validation: VideoValidation }) {
   )
 }
 
-export function ValidationPanel({ projectName }: Props) {
+export function ValidationPanel({ runId, projectName }: Props) {
   const [validations, setValidations] = useState<VideoValidation[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const activeKey = runId ?? projectName
+
   const load = useCallback(async () => {
-    if (!projectName) {
+    if (!activeKey) {
       setValidations([])
       return
     }
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api/validations/${encodeURIComponent(projectName)}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json() as { validations: VideoValidation[]; error?: string }
-      // Sort newest first — prefer timestamp, fall back to array order
-      const sorted = [...(data.validations ?? [])].sort((a, b) => {
-        if (!a.timestamp && !b.timestamp) return 0
-        if (!a.timestamp) return 1
-        if (!b.timestamp) return -1
-        return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-      })
-      setValidations(sorted)
-      if (data.error) setError(data.error)
+      if (runId) {
+        // ID-based: fetch single validation for this run
+        const res = await fetch(`/api/validation/${encodeURIComponent(runId)}`)
+        if (res.status === 404) {
+          setValidations([])
+          return
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json() as { validation: VideoValidation | null; error?: string }
+        setValidations(data.validation ? [data.validation] : [])
+        if (data.error) setError(data.error)
+      } else {
+        // Legacy: fetch all validations by project directory name
+        const res = await fetch(`/api/validations/${encodeURIComponent(projectName!)}`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json() as { validations: VideoValidation[]; error?: string }
+        const sorted = [...(data.validations ?? [])].sort((a, b) => {
+          if (!a.timestamp && !b.timestamp) return 0
+          if (!a.timestamp) return 1
+          if (!b.timestamp) return -1
+          return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        })
+        setValidations(sorted)
+        if (data.error) setError(data.error)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load validations')
     } finally {
       setLoading(false)
     }
-  }, [projectName])
+  }, [runId, projectName, activeKey])
 
   useEffect(() => { load() }, [load])
 
@@ -173,9 +191,9 @@ export function ValidationPanel({ projectName }: Props) {
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xs font-semibold tracking-widest uppercase text-text-muted">
           Validations
-          {projectName && (
+          {runId && (
             <span className="ml-2 font-mono font-normal normal-case text-text-subtle">
-              — {projectName}
+              — run {runId.slice(0, 8)}…
             </span>
           )}
         </h2>
@@ -192,15 +210,15 @@ export function ValidationPanel({ projectName }: Props) {
         <p className="text-xs text-brand-red mb-3">{error}</p>
       )}
 
-      {!projectName && (
+      {!activeKey && (
         <p className="text-xs text-text-subtle text-center py-4">
-          No project selected — upload footage to get started
+          No run selected
         </p>
       )}
 
-      {projectName && !loading && validations.length === 0 && !error && (
+      {activeKey && !loading && validations.length === 0 && !error && (
         <p className="text-xs text-text-subtle text-center py-4">
-          No validations yet for this project
+          No validation results yet for this run
         </p>
       )}
 

@@ -501,9 +501,63 @@ const server = createServer(async (req, res) => {
     }
   }
 
-  // Validation results for a project
+  // Validation result for a specific run (stable ID-based lookup)
+  if (url.startsWith('/api/validation/') && req.method === 'GET') {
+    const runId = decodeURIComponent(url.slice('/api/validation/'.length))
+    try {
+      // Try DB first: adaptive_pipeline_runs stores project_dir per run_id
+      let projectDir: string | null = null
+      if (process.env.SUPABASE_URL) {
+        try {
+          const { getAdaptivePipelineRun } = await import('@splicewerk/db')
+          const row = await getAdaptivePipelineRun(runId)
+          if (row?.project_dir) projectDir = row.project_dir
+        } catch { /* fall through to disk scan */ }
+      }
+
+      // Disk fallback: scan all project dirs for a validation file matching runId
+      if (!projectDir) {
+        const projectsRoot = 'projects'
+        try {
+          const projectDirs = await fs.readdir(projectsRoot)
+          outer: for (const dirName of projectDirs) {
+            const dir = path.join(projectsRoot, dirName)
+            let entries: string[]
+            try { entries = await fs.readdir(dir) } catch { continue }
+            for (const name of entries) {
+              if (!name.startsWith('validation-') || !name.endsWith('.json')) continue
+              const raw = await fs.readFile(path.join(dir, name), 'utf-8')
+              const v = JSON.parse(raw) as Record<string, unknown>
+              if (v.runId === runId) { projectDir = dir; break outer }
+            }
+          }
+        } catch { /* projects dir missing */ }
+      }
+
+      if (!projectDir) {
+        return json(res, { validation: null, error: `No validation found for run ${runId}` }, 404)
+      }
+
+      // Read the matching validation file from project dir
+      const entries = await fs.readdir(projectDir)
+      const validationFiles = entries
+        .filter(name => name.startsWith('validation-') && name.endsWith('.json'))
+
+      for (const name of validationFiles) {
+        const raw = await fs.readFile(path.join(projectDir, name), 'utf-8')
+        const v = JSON.parse(raw) as Record<string, unknown>
+        if (v.runId === runId) return json(res, { validation: v })
+      }
+
+      return json(res, { validation: null, error: `No validation found for run ${runId}` }, 404)
+    } catch (err) {
+      return json(res, { validation: null, error: String(err) }, 500)
+    }
+  }
+
+  // All validation results for a project directory (legacy — kept for backward compat)
   if (url.startsWith('/api/validations/') && req.method === 'GET') {
-    const projectName = url.slice('/api/validations/'.length)
+    const projectName = decodeURIComponent(url.slice('/api/validations/'.length))
     try {
       const dir = path.join('projects', projectName)
       const entries = await fs.readdir(dir)
