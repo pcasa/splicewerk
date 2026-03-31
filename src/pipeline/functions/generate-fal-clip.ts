@@ -6,7 +6,17 @@ import type { FunctionManifest, ExecuteFn } from '../types.js'
 export const manifest: FunctionManifest = {
   name: 'generateFalClip',
   description:
-    'Generates an AI video clip from a static image using fal.ai (defaults to Kling 3.0 Pro at ~$0.03/sec — cheapest high-quality option). Use for animated car posters, atmospheric effects, product showcases. Swap model to veo3.1-fast for audio-native output. Same quality as Runway at 5–8x lower cost.',
+    'Generates an AI video clip from a static image using fal.ai. Defaults to Kling 3.0 Pro (~$0.03/sec). ' +
+    'Model options — image-to-video: ' +
+    '"fal-ai/kling-video/v3/pro/image-to-video" (default, film-grade motion physics), ' +
+    '"fal-ai/kling-video/v2.1/standard/image-to-video" (standard tier, cheaper), ' +
+    '"fal-ai/veo3.1-fast/image-to-video" (Google Veo, native audio, ~$0.05/s), ' +
+    '"fal-ai/wan-25-preview/image-to-video" (budget, ~$0.008/s), ' +
+    '"fal-ai/minimax/video-01-live" (MiniMax Hailuo-02, strong motion, ~$0.025/s), ' +
+    '"fal-ai/ltx-video/image-to-video" (fastest generation ~10s, draft quality), ' +
+    '"fal-ai/hunyuan-video/image-to-video" (Tencent, excellent consistency, ~$0.015/s), ' +
+    '"fal-ai/cogvideox-5b/image-to-video" (open-weight, stylized, ~$0.010/s). ' +
+    'Use Kling for car/action content. Use Veo for audio-native. Use LTX for fast iteration.',
   inputs: [
     {
       name: 'imagePath',
@@ -18,20 +28,20 @@ export const manifest: FunctionManifest = {
       name: 'prompt',
       type: 'string',
       description:
-        'Cinematic description of motion and atmosphere. Kling excels at fluid motion physics. Example: "Slow dolly forward, rain droplets on hood, neon reflections rippling on wet asphalt, atmospheric particles drifting, subtle camera shake".',
+        'Cinematic description of motion and atmosphere. Example: "Slow dolly forward, rain droplets on hood, neon reflections rippling on wet asphalt, atmospheric particles drifting, subtle camera shake".',
       required: true,
     },
     {
       name: 'model',
       type: 'string',
       description:
-        'fal.ai model endpoint. Options: "fal-ai/kling-video/v3/pro/image-to-video" (default, cheapest), "fal-ai/veo3.1-fast/image-to-video" (better quality + native audio), "fal-ai/wan-25-preview/image-to-video" (budget).',
+        'fal.ai model endpoint (see function description for full list). Default: "fal-ai/kling-video/v3/pro/image-to-video".',
       required: false,
     },
     {
       name: 'durationSeconds',
       type: 'number',
-      description: 'Clip duration: 5 or 10 seconds. Default: 5.',
+      description: 'Clip duration in seconds. Most models support 5 or 10. MiniMax supports 6 or 9. Default: 5.',
       required: false,
     },
     {

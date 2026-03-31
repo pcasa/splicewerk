@@ -6,24 +6,36 @@ import type { FunctionManifest, ExecuteFn } from '../types.js'
 export const manifest: FunctionManifest = {
   name: 'generateImageFal',
   description:
-    'Generates a high-quality still image from a text prompt using fal.ai Flux. Use for title cards, poster art, end card backgrounds, or any AI-generated image asset. Flux Dev is the default (high quality, ~$0.025/image). Flux Schnell is faster/cheaper.',
+    'Generates a high-quality still image from a text prompt using fal.ai. ' +
+    'Use for title cards, poster art, end card backgrounds, or any AI-generated image asset. ' +
+    'Model options: ' +
+    '"fal-ai/flux/dev" (default, ~$0.025, best general quality), ' +
+    '"fal-ai/flux/schnell" (~$0.003, 4-step fast, great for drafts), ' +
+    '"fal-ai/flux-pro" (~$0.040, pro tier), ' +
+    '"fal-ai/flux-pro/v1.1" (~$0.050, improved pro), ' +
+    '"fal-ai/flux-pro/v1.1-ultra" (~$0.060, highest quality up to 4MP), ' +
+    '"fal-ai/ideogram/v2" (~$0.080, best for text/typography in images — use for title cards with readable text), ' +
+    '"fal-ai/ideogram/v2/turbo" (~$0.050, faster Ideogram), ' +
+    '"fal-ai/recraft-v3" (~$0.040, best for brand/design/vector-style assets), ' +
+    '"fal-ai/fast-sdxl" (~$0.002, budget SDXL). ' +
+    'Use Ideogram for any image that must contain readable text. Use Recraft for logos and brand elements.',
   inputs: [
     {
       name: 'prompt',
       type: 'string',
-      description: 'Detailed description of the image to generate. Include lighting, style, mood.',
+      description: 'Detailed description of the image to generate. Include lighting, style, mood, and any text that should appear.',
       required: true,
     },
     {
       name: 'model',
       type: 'string',
-      description: 'fal.ai model: "fal-ai/flux/dev" (default), "fal-ai/flux/schnell" (fast/cheap), "fal-ai/flux-pro/v1.1-ultra" (best quality).',
+      description: 'fal.ai image model (see function description for full list). Default: "fal-ai/flux/dev".',
       required: false,
     },
     {
       name: 'width',
       type: 'number',
-      description: 'Image width in pixels. Default: 1920.',
+      description: 'Image width in pixels. Default: 1920. Note: Ideogram uses aspect ratio instead of explicit dimensions.',
       required: false,
     },
     {
