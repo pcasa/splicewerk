@@ -38,6 +38,41 @@ function json(res: ServerResponse, data: unknown, status = 200) {
   res.end(JSON.stringify(data))
 }
 
+// ─── Disk-based run manifest helpers ─────────────────────────────────────────
+
+type PipelineManifest = {
+  runId: string
+  userIntent: string
+  completedAt: string
+  assets: Record<string, string>
+  finalOutput: string | null
+  completedSteps: Array<{ functionName: string; durationMs: number; inputs: Record<string, unknown>; outputs: Record<string, unknown> }>
+  debug: { totalStepsExecuted: number }
+}
+
+/** Scan all project dirs and return all pipeline-run manifests, newest first. */
+async function scanPipelineManifests(): Promise<PipelineManifest[]> {
+  const manifests: PipelineManifest[] = []
+  try {
+    const entries = await fs.readdir('projects', { withFileTypes: true })
+    await Promise.all(entries.filter(e => e.isDirectory()).map(async (e) => {
+      const dirPath = path.join('projects', e.name)
+      try {
+        const files = await fs.readdir(dirPath)
+        await Promise.all(
+          files.filter(f => f.startsWith('pipeline-run-') && f.endsWith('.json')).map(async (f) => {
+            try {
+              const raw = await fs.readFile(path.join(dirPath, f), 'utf-8')
+              manifests.push(JSON.parse(raw) as PipelineManifest)
+            } catch { /* skip malformed */ }
+          })
+        )
+      } catch { /* skip unreadable dir */ }
+    }))
+  } catch { /* projects dir missing */ }
+  return manifests.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())
+}
+
 async function sendInngestEvent(name: string, data: unknown): Promise<string> {
   const res = await fetch(`${INNGEST}/e/local`, {
     method: 'POST',
@@ -70,6 +105,50 @@ const server = createServer(async (req, res) => {
     const html = await fs.readFile(DASHBOARD, 'utf-8')
     res.writeHead(200, { 'Content-Type': 'text/html' })
     return res.end(html)
+  }
+
+  // Video file serving — streams local video files with range request support
+  if (url.startsWith('/api/video') && req.method === 'GET') {
+    const filePath = new URL(url, 'http://localhost').searchParams.get('path') ?? ''
+    // Sanitize: must stay within projects/ directory
+    const resolved = path.resolve(filePath)
+    const projectsRoot = path.resolve('projects')
+    if (!resolved.startsWith(projectsRoot + path.sep) && !resolved.startsWith(projectsRoot)) {
+      res.writeHead(403); res.end('Forbidden'); return
+    }
+    try {
+      const stat = await fs.stat(resolved)
+      const ext = path.extname(resolved).toLowerCase()
+      const mime = ext === '.mov' ? 'video/quicktime' : ext === '.webm' ? 'video/webm' : 'video/mp4'
+      const rangeHeader = req.headers.range
+      if (rangeHeader) {
+        const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-')
+        const start = parseInt(startStr ?? '0', 10)
+        const end = endStr ? parseInt(endStr, 10) : stat.size - 1
+        const chunkSize = end - start + 1
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': mime,
+          'Access-Control-Allow-Origin': '*',
+        })
+        const { createReadStream } = await import('node:fs')
+        createReadStream(resolved, { start, end }).pipe(res)
+      } else {
+        res.writeHead(200, {
+          'Content-Length': stat.size,
+          'Content-Type': mime,
+          'Accept-Ranges': 'bytes',
+          'Access-Control-Allow-Origin': '*',
+        })
+        const { createReadStream } = await import('node:fs')
+        createReadStream(resolved).pipe(res)
+      }
+    } catch {
+      res.writeHead(404); res.end('Not found')
+    }
+    return
   }
 
   // Trigger logo reveal pipeline
@@ -163,10 +242,26 @@ const server = createServer(async (req, res) => {
 
   // Recent Inngest runs (local dev server uses GraphQL)
   if (url === '/api/runs') {
+    // Primary source: pipeline-run manifests on disk (persist across restarts)
+    const manifests = await scanPipelineManifests()
+    type RunEntry = { id: string; functionId: string; status: string; startedAt: string; endedAt?: string; prompt_used?: string; output_url?: string; totalSteps: number }
+    const manifestRuns: RunEntry[] = manifests.map(m => ({
+      id: m.runId,
+      functionId: 'adaptive-pipeline',
+      status: 'Completed' as string,
+      startedAt: m.completedAt,  // best approximation without start time in manifest
+      endedAt: m.completedAt,
+      prompt_used: m.userIntent,
+      output_url: m.finalOutput ?? undefined,
+      totalSteps: m.debug?.totalStepsExecuted ?? 0,
+    }))
+
+    // Supplement with live Inngest status (catches currently-running jobs)
+    let liveRunIds = new Set<string>()
     try {
-      const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+      const from = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() // last 2h
       const gql = {
-        query: `{ runs(filter: { from: "${from}" }, orderBy: [{ field: QUEUED_AT, direction: DESC }], first: 10) {
+        query: `{ runs(filter: { from: "${from}" }, orderBy: [{ field: QUEUED_AT, direction: DESC }], first: 20) {
           edges { node { id status startedAt endedAt function { slug } } }
         } }`,
       }
@@ -178,17 +273,26 @@ const server = createServer(async (req, res) => {
       const gqlData = await r.json() as { data?: { runs?: { edges?: Array<{ node: unknown }> } } }
       type GqlNode = { id: string; status: string; startedAt: string; endedAt?: string; function?: { slug: string } }
       const edges = (gqlData.data?.runs?.edges ?? []) as Array<{ node: GqlNode }>
-      const runs = edges.map((e) => ({
-        id: e.node.id,
-        functionId: e.node.function?.slug ?? 'unknown',
-        status: e.node.status.charAt(0).toUpperCase() + e.node.status.slice(1).toLowerCase() as string,
-        startedAt: e.node.startedAt,
-        endedAt: e.node.endedAt,
-      }))
-      return json(res, { runs })
-    } catch {
-      return json(res, { runs: [] })
-    }
+      for (const e of edges) {
+        const status = e.node.status.charAt(0).toUpperCase() + e.node.status.slice(1).toLowerCase()
+        if (status !== 'Completed') {
+          // Running/Failed run not yet written to disk — include it
+          manifestRuns.unshift({
+            id: e.node.id,
+            functionId: e.node.function?.slug ?? 'adaptive-pipeline',
+            status,
+            startedAt: e.node.startedAt,
+            endedAt: e.node.endedAt,
+            prompt_used: undefined,
+            output_url: undefined,
+            totalSteps: 0,
+          })
+        }
+        liveRunIds.add(e.node.id)
+      }
+    } catch { /* Inngest unavailable — disk manifests are enough */ }
+
+    return json(res, { runs: manifestRuns })
   }
 
   // Pending prompt for approval display
@@ -414,20 +518,40 @@ const server = createServer(async (req, res) => {
     return
   }
 
-  // Single run detail — run record + costs + prompt logs
+  // Single run detail — manifest + validation + costs from DB (if available)
   const runDetailMatch = url.match(/^\/api\/runs\/([^?]+)$/)
   if (runDetailMatch && req.method === 'GET') {
-    const runId = runDetailMatch[1]!
+    const runId = decodeURIComponent(runDetailMatch[1]!)
     try {
-      const [allRuns, costs, prompts] = await Promise.all([
-        getRecentRuns(50),
-        getRunCosts(runId),
-        getPromptLogs(20, runId),
-      ])
-      const run = allRuns.find(r => r.run_id === runId) ?? null
-      return json(res, { run, costs, prompts })
-    } catch {
-      return json(res, { run: null, costs: [], prompts: [] })
+      // Find the manifest for this run
+      const manifests = await scanPipelineManifests()
+      const manifest = manifests.find(m => m.runId === runId) ?? null
+
+      const run = manifest ? {
+        run_id: manifest.runId,
+        function_id: 'adaptive-pipeline',
+        status: 'Completed',
+        started_at: manifest.completedAt,
+        ended_at: manifest.completedAt,
+        prompt_used: manifest.userIntent,
+        output_url: manifest.finalOutput ?? undefined,
+      } : null
+
+      const steps = manifest?.completedSteps ?? []
+
+      // Try DB for costs/prompts (non-fatal if Supabase is down)
+      let costs: unknown[] = []
+      let prompts: unknown[] = []
+      try {
+        ;[costs, prompts] = await Promise.all([
+          getRunCosts(runId),
+          getPromptLogs(20, runId),
+        ])
+      } catch { /* Supabase unavailable */ }
+
+      return json(res, { run, steps, costs, prompts })
+    } catch (err) {
+      return json(res, { run: null, steps: [], costs: [], prompts: [], error: String(err) })
     }
   }
 

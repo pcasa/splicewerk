@@ -17,10 +17,19 @@ type Run = {
   ended_at?: string
   prompt_used?: string
   output_url?: string
+  totalSteps?: number
+}
+
+type RunStep = {
+  functionName: string
+  durationMs: number
+  inputs: Record<string, unknown>
+  outputs: Record<string, unknown>
 }
 
 type RunDetail = {
   run: Run | null
+  steps: RunStep[]
   costs: Array<{ service: string; operation: string; cost_usd: number; units?: number; unit_type?: string }>
   prompts: Array<{ step?: string; model: string; response_out?: string; latency_ms?: number }>
 }
@@ -61,7 +70,12 @@ function normalizeRun(r: Run): Run {
     endedAt: r.ended_at ?? r.endedAt,
     prompt_used: r.prompt_used,
     output_url: r.output_url,
+    totalSteps: r.totalSteps,
   }
+}
+
+function videoUrl(filePath: string): string {
+  return `http://localhost:3000/api/video?path=${encodeURIComponent(filePath)}`
 }
 
 export function RecentRuns() {
@@ -93,9 +107,9 @@ export function RecentRuns() {
       const res = await fetch(`/api/runs/${runId}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
-      setDetail(data)
+      setDetail({ run: data.run, steps: data.steps ?? [], costs: data.costs ?? [], prompts: data.prompts ?? [] })
     } catch {
-      setDetail({ run: null, costs: [], prompts: [] })
+      setDetail({ run: null, steps: [], costs: [], prompts: [] })
     } finally {
       setDetailLoading(false)
     }
@@ -143,9 +157,17 @@ export function RecentRuns() {
                   className="w-full flex items-center gap-3 px-3 py-2.5 bg-input hover:bg-input/80 transition-colors text-left"
                 >
                   <span className={`status-dot ${meta.dotClass}`} />
-                  <span className="flex-1 text-sm font-medium text-text-primary truncate">
-                    {slugifyFunctionId(run.functionId)}
-                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary truncate">
+                      {slugifyFunctionId(run.functionId)}
+                    </p>
+                    {run.prompt_used && (
+                      <p className="text-xs text-text-subtle truncate mt-0.5">{run.prompt_used}</p>
+                    )}
+                  </div>
+                  {run.totalSteps ? (
+                    <span className="text-xs text-text-subtle shrink-0">{run.totalSteps} steps</span>
+                  ) : null}
                   <span className="text-xs text-text-muted shrink-0">{meta.label}</span>
                   <span className="text-xs text-text-subtle font-mono shrink-0 w-14 text-right">
                     {formatDuration(run.startedAt, run.endedAt)}
@@ -177,16 +199,32 @@ export function RecentRuns() {
                           </div>
                         )}
 
-                        {/* Video output */}
+                        {/* Final video output */}
                         {detail.run?.output_url && (
                           <div>
-                            <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1.5">Output</p>
+                            <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1.5">Final Output</p>
                             <video
-                              src={detail.run.output_url}
+                              src={videoUrl(detail.run.output_url)}
                               controls
                               className="w-full rounded border border-border"
-                              style={{ maxHeight: '240px' }}
+                              style={{ maxHeight: '300px' }}
                             />
+                            <p className="text-[10px] font-mono text-text-subtle mt-1 truncate">{detail.run.output_url}</p>
+                          </div>
+                        )}
+
+                        {/* Pipeline steps */}
+                        {detail.steps.length > 0 && (
+                          <div>
+                            <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1.5">Steps</p>
+                            <div className="space-y-1">
+                              {detail.steps.map((s, i) => (
+                                <div key={i} className="flex justify-between items-center text-xs px-2 py-1.5 rounded bg-input border border-border">
+                                  <span className="text-text-primary font-mono">{s.functionName}</span>
+                                  <span className="text-text-subtle shrink-0 ml-2">{(s.durationMs / 1000).toFixed(1)}s</span>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         )}
 
@@ -231,8 +269,8 @@ export function RecentRuns() {
                         )}
 
                         {/* No detail available */}
-                        {!detail.run && detail.costs.length === 0 && detail.prompts.length === 0 && (
-                          <p className="text-xs text-text-subtle">No detail available — run may not be tracked in DB yet.</p>
+                        {!detail.run && detail.steps.length === 0 && detail.costs.length === 0 && (
+                          <p className="text-xs text-text-subtle">No detail available for this run.</p>
                         )}
                       </>
                     )}
